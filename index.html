@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RankUp | League VOD Review</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="Primary navigation">
+        <div class="brand">
+          <div class="brand-mark">R</div>
+          <div>
+            <strong>RankUp</strong>
+            <span>LoL VOD Review</span>
+          </div>
+        </div>
+
+        <nav class="nav-list">
+          <button class="nav-item active" type="button">Dashboard</button>
+          <button class="nav-item" type="button">VOD Review</button>
+          <button class="nav-item" type="button">Mistakes</button>
+          <button class="nav-item" type="button">Goals</button>
+        </nav>
+
+        <div class="player-card">
+          <span class="eyebrow">Tracked Player</span>
+          <strong>Mid Lane Review Set</strong>
+          <p>Gold II to Platinum push</p>
+        </div>
+      </aside>
+
+      <main class="workspace">
+        <header class="topbar">
+          <div>
+            <span class="eyebrow">Patch 14.10 sample dataset</span>
+            <h1>Turn League VODs into focused training plans.</h1>
+          </div>
+          <button class="primary-action" type="button" id="generateInsights">
+            Generate AI Review
+          </button>
+        </header>
+
+        <section class="hero-grid" aria-label="Project overview">
+          <article class="review-panel">
+            <div class="panel-header">
+              <div>
+                <span class="eyebrow">Current VOD</span>
+                <h2>Ahri vs. Orianna - ranked solo queue</h2>
+              </div>
+              <span class="status-pill">Reviewing</span>
+            </div>
+
+            <div class="video-frame">
+              <div class="rift-map" aria-hidden="true">
+                <div class="lane top"></div>
+                <div class="lane mid"></div>
+                <div class="lane bot"></div>
+                <div class="river"></div>
+                <div class="objective baron">B</div>
+                <div class="objective dragon">D</div>
+                <div class="marker marker-blue"></div>
+                <div class="marker marker-red"></div>
+              </div>
+              <div class="video-overlay">
+                <strong>23:18</strong>
+                <span>Dragon setup, mid priority lost</span>
+              </div>
+            </div>
+
+            <div class="timeline" id="timeline"></div>
+          </article>
+
+          <article class="insight-panel">
+            <div class="panel-header">
+              <div>
+                <span class="eyebrow">AI Summary</span>
+                <h2>Actionable review output</h2>
+              </div>
+            </div>
+            <div class="ai-output" id="aiOutput">
+              <p>
+                Select Generate AI Review to convert timestamp notes into a
+                coach-style summary with repeat mistakes and practice goals.
+              </p>
+            </div>
+          </article>
+        </section>
+
+        <section class="dashboard-grid" aria-label="Analytics dashboard">
+          <article class="metric-card">
+            <span class="eyebrow">Primary Leak</span>
+            <strong>Objective Setup</strong>
+            <p>42% of tagged mistakes happen before dragon or Baron fights.</p>
+          </article>
+          <article class="metric-card">
+            <span class="eyebrow">Improvement</span>
+            <strong>+18%</strong>
+            <p>Fewer late rotations across the last five reviewed games.</p>
+          </article>
+          <article class="metric-card">
+            <span class="eyebrow">Training Focus</span>
+            <strong>Vision Timer</strong>
+            <p>Place control ward 45 seconds before neutral objectives.</p>
+          </article>
+        </section>
+
+        <section class="analysis-layout">
+          <article class="chart-panel">
+            <div class="panel-header">
+              <div>
+                <span class="eyebrow">Mistake Categories</span>
+                <h2>Pattern breakdown</h2>
+              </div>
+            </div>
+            <div class="bars" id="bars"></div>
+          </article>
+
+          <article class="goals-panel">
+            <div class="panel-header">
+              <div>
+                <span class="eyebrow">Training Goals</span>
+                <h2>This week</h2>
+              </div>
+            </div>
+            <div class="goal-list" id="goals"></div>
+          </article>
+        </section>
+      </main>
+    </div>
+
+    <script src="script.js"></script>
+  </body>
+</html>
