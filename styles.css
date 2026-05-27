@@ -72,8 +72,9 @@ button {
 .eyebrow,
 .player-card p,
 .metric-card p,
-.video-overlay span,
 .ai-output p,
+.pipeline-step p,
+.upload-stage p,
 .goal p {
   color: var(--muted);
 }
@@ -90,7 +91,8 @@ button {
 }
 
 .nav-item,
-.primary-action {
+.primary-action,
+.secondary-action {
   border: 0;
   cursor: pointer;
 }
@@ -177,6 +179,19 @@ h2 {
   font-weight: 800;
 }
 
+.primary-action:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.secondary-action {
+  padding: 8px 11px;
+  color: var(--text);
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  font-weight: 800;
+}
+
 .hero-grid {
   display: grid;
   grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.75fr);
@@ -197,6 +212,10 @@ h2 {
   margin-bottom: 16px;
 }
 
+.compact-header {
+  margin-bottom: 10px;
+}
+
 .status-pill {
   padding: 6px 10px;
   color: var(--teal);
@@ -206,121 +225,144 @@ h2 {
   font-weight: 700;
 }
 
-.video-frame {
-  position: relative;
-  overflow: hidden;
-  min-height: 430px;
-  border: 1px solid #394553;
-  background: #111820;
-}
-
-.rift-map {
-  position: absolute;
-  inset: 0;
-  background:
-    linear-gradient(135deg, rgba(46, 94, 87, 0.62), transparent 36%),
-    linear-gradient(315deg, rgba(92, 54, 60, 0.72), transparent 38%),
-    #17231e;
-}
-
-.lane,
-.river {
-  position: absolute;
-  background: rgba(226, 213, 157, 0.24);
-}
-
-.lane.top {
-  top: 17%;
-  left: 8%;
-  width: 73%;
-  height: 26px;
-  transform: rotate(-28deg);
-}
-
-.lane.mid {
-  top: 48%;
-  left: 14%;
-  width: 72%;
-  height: 24px;
-  transform: rotate(-38deg);
-}
-
-.lane.bot {
-  right: 5%;
-  bottom: 17%;
-  width: 75%;
-  height: 26px;
-  transform: rotate(-28deg);
-}
-
-.river {
-  top: 35%;
-  left: -8%;
-  width: 116%;
-  height: 70px;
-  transform: rotate(38deg);
-  background: rgba(66, 198, 181, 0.2);
-}
-
-.objective,
-.marker {
-  position: absolute;
+.upload-stage {
   display: grid;
+  min-height: 260px;
   place-items: center;
-  border-radius: 50%;
-  font-weight: 800;
+  align-content: center;
+  gap: 12px;
+  padding: 28px;
+  text-align: center;
+  border: 1px dashed rgba(214, 169, 74, 0.65);
+  background:
+    linear-gradient(135deg, rgba(66, 198, 181, 0.1), transparent 38%),
+    linear-gradient(315deg, rgba(214, 169, 74, 0.12), transparent 42%),
+    #111820;
+  cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease;
 }
 
-.objective {
-  width: 44px;
-  height: 44px;
-  border: 1px solid rgba(255, 255, 255, 0.35);
-  background: #2a313c;
-}
-
-.baron {
-  top: 30%;
-  left: 29%;
-}
-
-.dragon {
-  right: 26%;
-  bottom: 27%;
-}
-
-.marker {
-  width: 18px;
-  height: 18px;
-  outline: 5px solid rgba(255, 255, 255, 0.12);
-}
-
-.marker-blue {
-  left: 44%;
-  top: 45%;
-  background: var(--blue);
-}
-
-.marker-red {
-  right: 29%;
-  bottom: 35%;
-  background: var(--red);
-}
-
-.video-overlay {
+.upload-stage input {
   position: absolute;
-  left: 16px;
-  bottom: 16px;
+  width: 1px;
+  height: 1px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.upload-stage.dragging,
+.upload-stage:hover {
+  border-color: var(--teal);
+  background-color: #14211f;
+}
+
+.upload-icon {
   display: grid;
-  gap: 4px;
-  padding: 12px 14px;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  background: rgba(16, 19, 24, 0.82);
+  width: 72px;
+  height: 72px;
+  place-items: center;
+  border: 1px solid rgba(214, 169, 74, 0.6);
+  color: var(--gold);
+  background: #201c14;
+  font-weight: 900;
+}
+
+.upload-stage p {
+  max-width: 560px;
+  line-height: 1.55;
+}
+
+.file-chip {
+  padding: 8px 11px;
+  color: var(--teal);
+  border: 1px solid rgba(66, 198, 181, 0.35);
+  background: rgba(66, 198, 181, 0.08);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.video-preview {
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  background: #090d12;
+}
+
+.video-preview video {
+  display: block;
+  width: 100%;
+  max-height: 360px;
+  background: #090d12;
+}
+
+.pipeline {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.pipeline-step {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.pipeline-step > span {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  color: var(--gold);
+  border: 1px solid rgba(214, 169, 74, 0.45);
+  font-size: 0.8rem;
+  font-weight: 900;
+}
+
+.pipeline-step strong {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.pipeline-step.complete {
+  border-color: rgba(66, 198, 181, 0.55);
+}
+
+.pipeline-step.complete > span {
+  color: #101318;
+  background: var(--teal);
+  border-color: var(--teal);
+}
+
+.pipeline-step.processing {
+  border-color: rgba(214, 169, 74, 0.75);
+  background: #242316;
 }
 
 .timeline {
   display: grid;
   gap: 10px;
   margin-top: 14px;
+}
+
+.full-transcript-card {
+  flex: 1;
+}
+
+.full-transcript-card pre {
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  padding: 14px;
+  color: var(--text);
+  border: 1px solid var(--line);
+  background: #0f141a;
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 0.9rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
 }
 
 .timestamp {
@@ -353,11 +395,31 @@ h2 {
   background: var(--gold);
 }
 
+.tag.wave {
+  background: var(--green);
+}
+
+.tag.jungle {
+  background: var(--teal);
+}
+
+.tag.transcript {
+  background: var(--gold);
+}
+
+.tag.positioning {
+  background: var(--blue);
+}
+
 .ai-output {
   display: grid;
   gap: 14px;
   min-height: 460px;
   align-content: start;
+}
+
+.ai-output .placeholder {
+  color: var(--muted);
 }
 
 .ai-output strong {
@@ -428,6 +490,23 @@ h2 {
   margin-bottom: 5px;
 }
 
+.lower-layout {
+  margin-top: 18px;
+}
+
+.architecture-list {
+  display: grid;
+  gap: 10px;
+}
+
+.architecture-list div {
+  padding: 12px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+  color: var(--muted);
+  font-weight: 700;
+}
+
 @media (max-width: 980px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -461,8 +540,8 @@ h2 {
     padding: 18px;
   }
 
-  .video-frame {
-    min-height: 300px;
+  .upload-stage {
+    min-height: 250px;
   }
 
   .timestamp,
