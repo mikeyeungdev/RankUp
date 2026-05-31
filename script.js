@@ -1,68 +1,19 @@
 const pipelineSteps = [
   {
     label: "Upload VOD",
-    detail: "Coach-reviewed League clip is stored with player, champion, and role metadata.",
+    detail: "Select the video file.",
   },
   {
     label: "Extract Audio",
-    detail: "The app isolates the coach commentary track from the uploaded MP4.",
+    detail: "Pull out the audio track.",
   },
   {
     label: "Transcribe",
-    detail: "Speech-to-text returns timestamped coaching segments.",
+    detail: "Create timestamped text.",
   },
   {
-    label: "Classify Concepts",
-    detail: "AI tags each segment with League concepts and mistake categories.",
-  },
-  {
-    label: "Generate Plan",
-    detail: "RankUp summarizes patterns and creates focused training goals.",
-  },
-];
-
-const transcriptMoments = [
-  {
-    time: "06:18",
-    category: "wave",
-    quote: "You crash this wave, but then you hover mid instead of using tempo to ward raptor entrance.",
-  },
-  {
-    time: "11:44",
-    category: "jungle",
-    quote: "Before trading here, ask where Lee Sin can be. Your river ward expired twenty seconds ago.",
-  },
-  {
-    time: "18:09",
-    category: "objective",
-    quote: "Dragon is spawning in forty-five. This reset has to happen now, not after one more wave.",
-  },
-  {
-    time: "24:37",
-    category: "positioning",
-    quote: "Your job in this fight is to threaten charm from fog, not walk first into river.",
-  },
-];
-
-const conceptData = [
-  { label: "Objective Tempo", value: 38 },
-  { label: "Wave Management", value: 24 },
-  { label: "Jungle Tracking", value: 21 },
-  { label: "Teamfight Positioning", value: 17 },
-];
-
-const goals = [
-  {
-    title: "45-second objective reset",
-    text: "Recall, buy control ward, and move with jungler before every dragon or Baron setup.",
-  },
-  {
-    title: "Wave into information",
-    text: "After crashing mid wave, spend the next tempo window placing or clearing vision.",
-  },
-  {
-    title: "Jungle location callout",
-    text: "Before taking a trade, say the enemy jungler's likely quadrant out loud.",
+    label: "Build Plan",
+    detail: "Create evidence-backed goals.",
   },
 ];
 
@@ -101,42 +52,9 @@ pipeline.innerHTML = pipelineSteps
   )
   .join("");
 
-timeline.innerHTML = transcriptMoments
-  .map(
-    (item) => `
-      <div class="timestamp">
-        <strong>${item.time}</strong>
-        <span>${item.quote}</span>
-        <span class="tag ${item.category}">${item.category}</span>
-      </div>
-    `
-  )
-  .join("");
-
-bars.innerHTML = conceptData
-  .map(
-    (item) => `
-      <div class="bar-row">
-        <strong>${item.label}</strong>
-        <div class="bar-track" aria-label="${item.label}: ${item.value}%">
-          <div class="bar-fill" style="width: ${item.value}%"></div>
-        </div>
-        <span>${item.value}%</span>
-      </div>
-    `
-  )
-  .join("");
-
-goalList.innerHTML = goals
-  .map(
-    (goal) => `
-      <div class="goal">
-        <strong>${goal.title}</strong>
-        <p>${goal.text}</p>
-      </div>
-    `
-  )
-  .join("");
+timeline.innerHTML = emptyState("No transcript yet.");
+bars.innerHTML = emptyState("No excerpts yet.");
+goalList.innerHTML = emptyState("No action items yet.");
 
 processVod.addEventListener("click", async () => {
   if (window.location.protocol === "file:") {
@@ -148,14 +66,14 @@ processVod.addEventListener("click", async () => {
   }
 
   if (!selectedVod) {
-    fileChip.textContent = "Add a coached VOD before processing";
+    fileChip.textContent = "Choose a video before transcribing";
     uploadStage.classList.add("dragging");
     setTimeout(() => uploadStage.classList.remove("dragging"), 900);
     return;
   }
 
   processVod.disabled = true;
-  processVod.textContent = "Processing...";
+  processVod.textContent = "Transcribing...";
   pipelineStatus.textContent = "Working";
   aiOutput.innerHTML = `<p class="placeholder">Extracting audio from ${selectedVod.name}...</p>`;
 
@@ -191,17 +109,17 @@ processVod.addEventListener("click", async () => {
     steps.forEach((step) => step.classList.add("complete"));
     steps.forEach((step) => step.classList.remove("processing"));
     pipelineStatus.textContent = "Analyzed";
-    processVod.textContent = "Analysis Complete";
+    processVod.textContent = "Transcription Complete";
     processVod.disabled = false;
     renderReviewResult(result);
   } catch (error) {
     steps.forEach((step) => step.classList.remove("processing"));
-    pipelineStatus.textContent = "Needs Setup";
-    processVod.textContent = "Process Coached VOD";
+    pipelineStatus.textContent = "Needs Attention";
+    processVod.textContent = "Transcribe VOD";
     processVod.disabled = false;
     aiOutput.innerHTML = `
       <p><strong>Processing failed:</strong> ${error.message}</p>
-      <p class="placeholder">Make sure the page is opened at <strong>http://localhost:3000</strong>, the server is running with <strong>npm run dev</strong>, and <strong>OPENAI_API_KEY</strong> is set in your .env file.</p>
+      <p class="placeholder">Make sure the page is opened at <strong>http://localhost:3000</strong>, the server is running with <strong>npm run dev</strong>, and local Whisper is installed with <strong>npm run setup:local-whisper</strong>.</p>
     `;
   }
 });
@@ -210,6 +128,7 @@ function renderReviewResult(result) {
   const concepts = result.analysis.importantConcepts || [];
   const mistakes = result.analysis.recurringMistakes || [];
   const generatedGoals = result.analysis.trainingGoals || [];
+  const keyMoments = result.analysis.keyMoments || [];
   const segments = result.segments || [];
   latestTranscript = result.transcript || "";
 
@@ -230,12 +149,14 @@ function renderReviewResult(result) {
 
   fullTranscript.textContent =
     latestTranscript.trim() ||
-    "No clear coach speech was detected. Try a VOD with louder coach audio, or set LOCAL_WHISPER_MODEL=base in .env for better accuracy.";
+    "No clear speech detected. Try louder coach audio or set LOCAL_WHISPER_MODEL=base.";
 
-  bars.innerHTML = concepts
-    .map((concept, index) => {
-      const value = Math.max(8, Math.min(100, Math.round(concept.frequency || 20)));
-      return `
+  bars.innerHTML =
+    concepts.length > 0
+      ? concepts
+          .map((concept, index) => {
+            const value = Math.max(8, Math.min(100, Math.round(concept.frequency || 20)));
+            return `
         <div class="bar-row">
           <strong>${escapeHtml(concept.name)}</strong>
           <div class="bar-track" aria-label="${escapeHtml(concept.name)}: ${value}%">
@@ -244,41 +165,82 @@ function renderReviewResult(result) {
           <span>${index + 1}</span>
         </div>
       `;
-    })
-    .join("");
+          })
+          .join("")
+      : emptyState("No excerpts found.");
 
-  goalList.innerHTML = generatedGoals
-    .map(
-      (goal) => `
+  goalList.innerHTML =
+    generatedGoals.length > 0
+      ? generatedGoals
+          .map(
+            (goal) => `
         <div class="goal">
           <strong>${escapeHtml(goal.title)}</strong>
           <p>${escapeHtml(goal.description)}</p>
+          ${
+            goal.evidence
+              ? `<small>Evidence: "${escapeHtml(goal.evidence)}"</small>`
+              : ""
+          }
         </div>
       `
-    )
-    .join("");
+          )
+          .join("")
+      : emptyState("No action items found.");
 
-  aiOutput.innerHTML = `
-    <p><strong>Coach summary:</strong> ${escapeHtml(result.analysis.summary)}</p>
-    <p><strong>Important concepts:</strong></p>
-    <ul>
-      ${concepts
-        .map(
-          (concept) =>
-            `<li><strong>${escapeHtml(concept.name)}:</strong> ${escapeHtml(concept.whyItMatters)}</li>`
-        )
-        .join("")}
-    </ul>
-    <p><strong>Recurring mistakes:</strong></p>
-    <ul>
-      ${mistakes
-        .map(
-          (mistake) =>
-            `<li><strong>${escapeHtml(mistake.mistake)}:</strong> ${escapeHtml(mistake.fix)}</li>`
-        )
-        .join("")}
-    </ul>
+  aiOutput.innerHTML =
+    concepts.length > 0 || mistakes.length > 0 || generatedGoals.length > 0 || keyMoments.length > 0
+      ? renderAnalysis(result.analysis)
+      : `
+        <p><strong>Transcript ready:</strong> ${escapeHtml(result.analysis.summary)}</p>
+        <p class="placeholder">Check the transcript for audio quality, then retry with Ollama running.</p>
+      `;
+}
+
+function renderAnalysis(analysis) {
+  const concepts = analysis.importantConcepts || [];
+  const mistakes = analysis.recurringMistakes || [];
+  const goals = analysis.trainingGoals || [];
+  const keyMoments = analysis.keyMoments || [];
+
+  return `
+    <p><strong>Summary:</strong> ${escapeHtml(analysis.summary)}</p>
+    ${
+      concepts.length > 0
+        ? `<p><strong>Focus areas:</strong></p><ul>${concepts
+            .map(
+              (concept) =>
+                `<li><strong>${escapeHtml(concept.name)}:</strong> ${escapeHtml(concept.whyItMatters)}</li>`
+            )
+            .join("")}</ul>`
+        : ""
+    }
+    ${
+      goals.length > 0
+        ? `<p><strong>Training goals:</strong></p><ul>${goals
+            .map(
+              (goal) =>
+                `<li><strong>${escapeHtml(goal.title)}:</strong> ${escapeHtml(goal.description)}</li>`
+            )
+            .join("")}</ul>`
+        : ""
+    }
+    ${
+      keyMoments.length > 0
+        ? `<p><strong>Key moments:</strong></p><ul>${keyMoments
+            .slice(0, 4)
+            .map(
+              (moment) =>
+                `<li><strong>${formatTime(moment.time)}:</strong> ${escapeHtml(moment.text)}</li>`
+            )
+            .join("")}</ul>`
+        : ""
+    }
   `;
+}
+
+function emptyState(message) {
+  return `<div class="empty-state">${message}</div>`;
 }
 
 function setSelectedVod(file) {
@@ -290,7 +252,7 @@ function setSelectedVod(file) {
   selectedVod = file;
   fileChip.textContent = `${file.name} selected`;
   pipelineStatus.textContent = "Uploaded";
-  processVod.textContent = "Process Coached VOD";
+  processVod.textContent = "Transcribe VOD";
 
   if (objectUrl) {
     URL.revokeObjectURL(objectUrl);

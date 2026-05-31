@@ -14,7 +14,7 @@ const port = process.env.PORT || 3000;
 const uploadDir = path.join(__dirname, "uploads");
 const audioDir = path.join(__dirname, "processed-audio");
 const transcribeProvider = process.env.TRANSCRIBE_PROVIDER || "local";
-const analysisProvider = process.env.ANALYSIS_PROVIDER || "local";
+const analysisProvider = process.env.ANALYSIS_PROVIDER || "local_grounded";
 
 fs.mkdirSync(uploadDir, { recursive: true });
 fs.mkdirSync(audioDir, { recursive: true });
@@ -43,6 +43,8 @@ app.get("/api/health", (_req, res) => {
     transcribeProvider,
     analysisProvider,
     localWhisperModel: process.env.LOCAL_WHISPER_MODEL || "base",
+    ollamaHost: process.env.OLLAMA_HOST || "http://localhost:11434",
+    ollamaModel: process.env.OLLAMA_MODEL || "llama3.1:8b",
     transcribeModel: process.env.OPENAI_TRANSCRIBE_MODEL || "whisper-1",
     analysisModel: process.env.OPENAI_ANALYSIS_MODEL || "gpt-4.1-mini",
   });
@@ -52,7 +54,7 @@ app.post("/api/reviews", upload.single("vod"), async (req, res) => {
   if ((transcribeProvider === "openai" || analysisProvider === "openai") && !process.env.OPENAI_API_KEY) {
     res.status(400).json({
       error:
-        "Missing OPENAI_API_KEY. Add it to .env or switch TRANSCRIBE_PROVIDER and ANALYSIS_PROVIDER to local.",
+        "Missing OPENAI_API_KEY. Add it to .env or switch TRANSCRIBE_PROVIDER to local and ANALYSIS_PROVIDER to local_grounded.",
     });
     return;
   }
@@ -69,12 +71,13 @@ app.post("/api/reviews", upload.single("vod"), async (req, res) => {
     await extractAudio(uploadedPath, audioPath);
     const transcription = await transcribeAudio(audioPath);
     const transcriptText = normalizeTranscript(transcription);
-    const analysis = await analyzeTranscript(transcriptText, req.file.originalname);
+    const segments = normalizeSegments(transcription, transcriptText);
+    const analysis = await analyzeTranscript(transcriptText, req.file.originalname, segments);
 
     res.json({
       fileName: req.file.originalname,
       transcript: transcriptText,
-      segments: normalizeSegments(transcription, transcriptText),
+      segments,
       analysis,
     });
   } catch (error) {
@@ -136,9 +139,17 @@ async function transcribeAudio(audioPath) {
   });
 }
 
-async function analyzeTranscript(transcript, fileName) {
-  if (analysisProvider === "local") {
-    return analyzeTranscriptLocally(transcript, fileName);
+async function analyzeTranscript(transcript, fileName, segments = []) {
+  if (analysisProvider === "none") {
+    return buildTranscriptOnlyResult(transcript, fileName);
+  }
+
+  if (analysisProvider === "local_grounded") {
+    return buildGroundedTrainingPlan(transcript, fileName, segments);
+  }
+
+  if (analysisProvider === "ollama") {
+    return analyzeTranscriptWithOllama(transcript, fileName, segments);
   }
 
   const openai = getOpenAIClient();
@@ -217,6 +228,180 @@ async function analyzeTranscript(transcript, fileName) {
   return JSON.parse(completion.choices[0].message.content);
 }
 
+async function analyzeTranscriptWithOllama(transcript, fileName, segments) {
+  const cleanTranscript = transcript.trim();
+
+  if (!cleanTranscript) {
+    return buildTranscriptOnlyResult(transcript, fileName);
+  }
+
+  const ollamaHost = process.env.OLLAMA_HOST || "http://localhost:11434";
+  const model = process.env.OLLAMA_MODEL || "llama3.1:8b";
+  const prompt = buildOllamaPrompt(fileName, cleanTranscript, segments);
+
+  const response = await fetch(`${ollamaHost}/api/generate`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model,
+      prompt,
+      stream: false,
+      format: "json",
+      options: {
+        temperature: 0.1,
+        top_p: 0.8,
+      },
+    }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(
+      `Ollama analysis failed. Make sure Ollama is running and ${model} is installed. ${text}`
+    );
+  }
+
+  const payload = await response.json();
+
+  try {
+    return normalizeOllamaAnalysis(JSON.parse(payload.response), fileName, cleanTranscript);
+  } catch (error) {
+    throw new Error(`Ollama returned invalid JSON. ${error.message}`);
+  }
+}
+
+function buildOllamaPrompt(fileName, transcript, segments) {
+  const segmentText = segments
+    .slice(0, 40)
+    .map((segment) => `[${formatSeconds(segment.start)}] ${segment.text}`)
+    .join("\n");
+
+  return `
+You are RankUp, a League of Legends coaching assistant.
+
+Task:
+Create a concise structured training plan from a coached VOD transcript.
+
+Rules:
+- Use ONLY the transcript.
+- Do not invent events, champion details, mistakes, timestamps, or advice.
+- Every concept, mistake, and training goal must include a short exact quote from the transcript as evidence.
+- If the transcript does not support an item, omit it.
+- Prefer specific coach instructions over generic advice.
+- Keep the output useful for a student and coach to share after review.
+
+Return ONLY valid JSON with this shape:
+{
+  "summary": "one concise paragraph",
+  "importantConcepts": [
+    {
+      "name": "short label grounded in transcript",
+      "category": "macro | positioning | objective_control | laning | vision | mechanics | review_note",
+      "whyItMatters": "why this matters, tied to the quote",
+      "frequency": 1,
+      "evidence": "exact transcript quote"
+    }
+  ],
+  "recurringMistakes": [
+    {
+      "mistake": "short mistake or review issue grounded in transcript",
+      "evidence": "exact transcript quote",
+      "fix": "specific action based only on transcript"
+    }
+  ],
+  "trainingGoals": [
+    {
+      "title": "short practice goal",
+      "description": "specific action based only on transcript",
+      "targetConcept": "matching concept label",
+      "evidence": "exact transcript quote"
+    }
+  ],
+  "keyMoments": [
+    {
+      "time": 0,
+      "text": "short exact or near-exact transcript moment",
+      "topic": "short label"
+    }
+  ]
+}
+
+File: ${fileName}
+
+Timestamped transcript segments:
+${segmentText || "No timestamped segments available."}
+
+Full transcript:
+${transcript}
+`.trim();
+}
+
+function normalizeOllamaAnalysis(analysis, fileName, transcript) {
+  const summary =
+    typeof analysis.summary === "string" && analysis.summary.trim()
+      ? analysis.summary.trim()
+      : `RankUp analyzed ${fileName} with Ollama. Review the transcript evidence before sharing.`;
+
+  return {
+    summary,
+    importantConcepts: normalizeArray(analysis.importantConcepts).slice(0, 6).map((item, index) => ({
+      name: safeString(item.name, `Concept ${index + 1}`),
+      category: safeString(item.category, "review_note"),
+      whyItMatters: withEvidence(item.whyItMatters, item.evidence),
+      frequency: Number.isFinite(Number(item.frequency)) ? Number(item.frequency) : 20,
+      evidence: safeString(item.evidence, ""),
+    })),
+    recurringMistakes: normalizeArray(analysis.recurringMistakes).slice(0, 5).map((item) => ({
+      mistake: safeString(item.mistake, "Review issue"),
+      evidence: safeString(item.evidence, ""),
+      fix: safeString(item.fix, ""),
+    })),
+    trainingGoals: normalizeArray(analysis.trainingGoals).slice(0, 5).map((item, index) => ({
+      title: safeString(item.title, `Goal ${index + 1}`),
+      description: safeString(item.description, ""),
+      targetConcept: safeString(item.targetConcept, "Review note"),
+      evidence: safeString(item.evidence, ""),
+    })),
+    keyMoments: normalizeArray(analysis.keyMoments).slice(0, 8).map((item) => ({
+      time: Number.isFinite(Number(item.time)) ? Number(item.time) : 0,
+      text: safeString(item.text, ""),
+      topic: safeString(item.topic, "Review moment"),
+    })),
+    metadata: {
+      analysisMode: "ollama",
+      wordCount: transcript.split(/\s+/).filter(Boolean).length,
+    },
+  };
+}
+
+function normalizeArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function safeString(value, fallback) {
+  return typeof value === "string" && value.trim() ? value.trim() : fallback;
+}
+
+function withEvidence(text, evidence) {
+  const cleanText = safeString(text, "");
+  const cleanEvidence = safeString(evidence, "");
+
+  if (!cleanEvidence) {
+    return cleanText;
+  }
+
+  return cleanText.includes(cleanEvidence)
+    ? cleanText
+    : `${cleanText} Evidence: "${cleanEvidence}"`;
+}
+
+function formatSeconds(seconds) {
+  const rounded = Math.max(0, Math.round(seconds || 0));
+  const minutes = Math.floor(rounded / 60);
+  const remainder = String(rounded % 60).padStart(2, "0");
+  return `${minutes}:${remainder}`;
+}
+
 function normalizeTranscript(transcription) {
   if (typeof transcription === "string") {
     return transcription;
@@ -274,166 +459,139 @@ function transcribeAudioLocally(audioPath) {
   });
 }
 
-function analyzeTranscriptLocally(transcript, fileName) {
-  if (transcript.trim().length < 40) {
-    return {
-      summary: `RankUp processed ${fileName}, but local Whisper found very little coach speech. The structured output below is a fallback template, not a reliable summary of the VOD.`,
-      importantConcepts: [
-        {
-          name: "Transcript Quality",
-          category: "audio",
-          whyItMatters:
-            "The analysis depends on the coach audio transcript. Low-volume audio, music, game sounds, or no spoken review will make the output generic.",
-          frequency: 100,
-        },
-      ],
-      recurringMistakes: [
-        {
-          mistake: "Not enough transcript evidence for mistake detection.",
-          evidence: "Local Whisper returned too little spoken text.",
-          fix: "Use a VOD with clear coach commentary audio or set LOCAL_WHISPER_MODEL=base for better transcription accuracy.",
-        },
-      ],
-      trainingGoals: [
-        {
-          title: "Improve transcript input",
-          description:
-            "Upload a VOD where the coach commentary is louder than gameplay audio, then process it again.",
-          targetConcept: "Transcript Quality",
-        },
-      ],
-    };
-  }
-
-  const lowerTranscript = transcript.toLowerCase();
-  const conceptRules = [
-    {
-      name: "Objective Tempo",
-      category: "objective_control",
-      keywords: ["dragon", "baron", "objective", "reset", "tempo", "spawn", "timer"],
-      whyItMatters:
-        "Neutral objectives are usually won before the fight starts through reset timing, river control, and first move.",
-      goal: {
-        title: "45-second objective setup",
-        description:
-          "Before each dragon or Baron, reset early, buy a control ward, push mid, and move with your jungler before the timer reaches 30 seconds.",
-        targetConcept: "Objective Tempo",
-      },
-    },
-    {
-      name: "Wave Management",
-      category: "laning",
-      keywords: ["wave", "crash", "freeze", "slow push", "push", "lane", "minion"],
-      whyItMatters:
-        "Wave state decides whether you can recall, roam, contest vision, or move first to a fight.",
-      goal: {
-        title: "Wave into action",
-        description:
-          "After crashing a wave, immediately choose the next action: ward, reset, roam, or pressure objective setup.",
-        targetConcept: "Wave Management",
-      },
-    },
-    {
-      name: "Jungle Tracking",
-      category: "jungle_tracking",
-      keywords: ["jungle", "jungler", "gank", "lee sin", "vi", "sejuani", "pathing", "raptor", "ward"],
-      whyItMatters:
-        "Knowing the enemy jungler's likely location changes which trades and river movements are safe.",
-      goal: {
-        title: "Jungler location callout",
-        description:
-          "Before every aggressive trade, say the enemy jungler's likely quadrant and whether your nearest ward is still active.",
-        targetConcept: "Jungle Tracking",
-      },
-    },
-    {
-      name: "Vision Control",
-      category: "vision",
-      keywords: ["vision", "ward", "control ward", "sweeper", "fog", "river", "brush"],
-      whyItMatters:
-        "Vision turns coach advice into actionable safety checks before rotations and objective fights.",
-      goal: {
-        title: "Vision before face-checking",
-        description:
-          "Use trinket, sweeper, or teammate pressure before entering fog around river and jungle entrances.",
-        targetConcept: "Vision Control",
-      },
-    },
-    {
-      name: "Teamfight Positioning",
-      category: "teamfighting",
-      keywords: ["fight", "position", "frontline", "backline", "flank", "charm", "engage", "teamfight"],
-      whyItMatters:
-        "Your champion's job changes by fight: threaten from fog, follow engage, peel, or hold cooldowns.",
-      goal: {
-        title: "Define fight job first",
-        description:
-          "Before a fight starts, identify whether your role is engage follow-up, pick threat, peel, or damage cleanup.",
-        targetConcept: "Teamfight Positioning",
-      },
-    },
-  ];
-
-  const concepts = conceptRules
-    .map((concept) => ({
-      ...concept,
-      frequency: countKeywordMatches(lowerTranscript, concept.keywords),
-    }))
-    .filter((concept) => concept.frequency > 0)
-    .sort((a, b) => b.frequency - a.frequency);
-
-  const selectedConcepts = concepts.length > 0 ? concepts.slice(0, 4) : conceptRules.slice(0, 3);
-  const importantConcepts = selectedConcepts.map((concept) => ({
-    name: concept.name,
-    category: concept.category,
-    whyItMatters: concept.whyItMatters,
-    frequency: Math.min(100, Math.max(15, concept.frequency * 18 || 20)),
-  }));
-
-  const recurringMistakes = selectedConcepts.slice(0, 3).map((concept) => ({
-    mistake: `${concept.name} is not being converted into a repeatable in-game routine.`,
-    evidence: findEvidenceSentence(transcript, concept.keywords),
-    fix: concept.goal.description,
-  }));
-
-  const trainingGoals = selectedConcepts.slice(0, 3).map((concept) => concept.goal);
+function buildTranscriptOnlyResult(transcript, fileName) {
+  const wordCount = transcript.trim().split(/\s+/).filter(Boolean).length;
 
   return {
-    summary: buildLocalSummary(fileName, importantConcepts, transcript),
-    importantConcepts,
-    recurringMistakes,
-    trainingGoals,
+    summary: transcript.trim()
+      ? `Transcript extracted for ${fileName}. Review notes are limited to direct transcript text.`
+      : `Transcript generated for ${fileName}, but no clear coach speech was detected.`,
+    importantConcepts: [],
+    recurringMistakes: [],
+    trainingGoals: [],
+    metadata: {
+      analysisMode: "transcript_only",
+      wordCount,
+    },
   };
 }
 
-function countKeywordMatches(text, keywords) {
-  return keywords.reduce((total, keyword) => {
-    const escaped = keyword.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const matches = text.match(new RegExp(`\\b${escaped}\\b`, "g"));
-    return total + (matches ? matches.length : 0);
-  }, 0);
-}
+function buildGroundedTrainingPlan(transcript, fileName, fallbackSegments) {
+  const cleanTranscript = transcript.trim();
+  const wordCount = cleanTranscript.split(/\s+/).filter(Boolean).length;
 
-function findEvidenceSentence(transcript, keywords) {
-  const sentences = transcript
-    .split(/(?<=[.!?])\s+/)
-    .map((sentence) => sentence.trim())
-    .filter(Boolean);
-
-  const match = sentences.find((sentence) =>
-    keywords.some((keyword) => sentence.toLowerCase().includes(keyword))
-  );
-
-  return match || "The coach transcript references this concept during the review.";
-}
-
-function buildLocalSummary(fileName, concepts, transcript) {
-  if (!transcript.trim()) {
-    return `RankUp processed ${fileName}, but the local transcription did not detect clear coach speech. Try a VOD with louder commentary audio or a larger Whisper model.`;
+  if (wordCount < 25) {
+    return {
+      summary: `RankUp processed ${fileName}, but there was not enough coach commentary to extract reliable review notes.`,
+      importantConcepts: [],
+      recurringMistakes: [],
+      trainingGoals: [],
+      keyMoments: [],
+      metadata: {
+        analysisMode: "local_grounded",
+        wordCount,
+        confidence: "low",
+      },
+    };
   }
 
-  const names = concepts.map((concept) => concept.name).join(", ");
-  return `RankUp processed ${fileName} locally using the transcript text. The keyword-based analysis found the strongest coaching themes around ${names}. Check the raw transcript below to confirm whether the detected themes match what was actually said.`;
+  const sentences = splitTranscriptIntoSentences(cleanTranscript);
+  const excerptSentences = sentences
+    .filter(isCoachingSentence)
+    .slice(0, 6);
+  const actionSentences = sentences
+    .filter(isActionableSentence)
+    .slice(0, 6);
+
+  const importantConcepts = (excerptSentences.length > 0 ? excerptSentences : sentences.slice(0, 4)).map(
+    (sentence, index) => ({
+      name: `Coach excerpt ${index + 1}`,
+      category: "transcript_excerpt",
+      whyItMatters: sentence,
+      frequency: 100 - index * 8,
+    })
+  );
+
+  const trainingGoals = actionSentences.map((sentence, index) => ({
+    title: `Action item ${index + 1}`,
+    description: sentence,
+    targetConcept: "Transcript action item",
+    evidence: sentence,
+  }));
+
+  const keyMoments = fallbackSegments
+    .filter((segment) => segment.text && segment.text.trim())
+    .slice(0, 8)
+    .map((segment) => ({
+      time: segment.start,
+      text: segment.text,
+      topic: "Transcript moment",
+    }));
+
+  return {
+    summary: `RankUp extracted shareable coach notes from ${fileName}. Items below are direct transcript excerpts.`,
+    importantConcepts,
+    recurringMistakes: [],
+    trainingGoals,
+    keyMoments,
+    metadata: {
+      analysisMode: "local_grounded",
+      wordCount,
+      confidence: "evidence_based",
+    },
+  };
+}
+
+function isCoachingSentence(sentence) {
+  const lower = sentence.toLowerCase();
+  return isActionableSentence(sentence) || [
+    "because",
+    "mistake",
+    "problem",
+    "good",
+    "bad",
+    "important",
+    "watch",
+    "notice",
+    "look at",
+    "this is",
+    "that's why",
+  ].some((phrase) => lower.includes(phrase));
+}
+
+function splitTranscriptIntoSentences(transcript) {
+  return transcript
+    .replace(/\s+/g, " ")
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length > 12);
+}
+
+function isActionableSentence(sentence) {
+  const lower = sentence.toLowerCase();
+  return [
+    "need to",
+    "should",
+    "don't",
+    "do not",
+    "remember",
+    "try to",
+    "focus",
+    "make sure",
+    "you have to",
+    "you need",
+    "stop",
+    "start",
+    "look",
+  ].some((phrase) => lower.includes(phrase));
+}
+
+function normalizeSegmentsFromText(transcript) {
+  return splitTranscriptIntoSentences(transcript).map((sentence, index) => ({
+    start: index * 30,
+    end: index * 30 + 15,
+    text: sentence,
+  }));
 }
 
 function normalizeSegments(transcription, transcriptText) {

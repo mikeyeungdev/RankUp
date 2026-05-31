@@ -3,177 +3,102 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>RankUp | Coach VOD Intelligence</title>
+    <title>RankUp | VOD Transcript Review</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div class="app-shell">
-      <aside class="sidebar" aria-label="Primary navigation">
+    <main class="app">
+      <header class="app-header">
         <div class="brand">
           <div class="brand-mark">R</div>
           <div>
             <strong>RankUp</strong>
-            <span>Coach VOD Intelligence</span>
+            <span>League review notes</span>
           </div>
         </div>
+        <span class="status-pill" id="pipelineStatus">Ready</span>
+      </header>
 
-        <nav class="nav-list">
-          <button class="nav-item active" type="button" data-target="pipelineSection">Review Pipeline</button>
-          <button class="nav-item" type="button" data-target="transcriptSection">Transcript</button>
-          <button class="nav-item" type="button" data-target="fullTranscriptSection">Full Transcript</button>
-          <button class="nav-item" type="button" data-target="conceptSection">Concepts</button>
-          <button class="nav-item" type="button" data-target="goalSection">Goals</button>
-        </nav>
-
-        <div class="player-card">
-          <span class="eyebrow">Demo Focus</span>
-          <strong>Coached LoL VOD</strong>
-          <p>Convert spoken review into structured training priorities.</p>
+      <section class="hero" id="uploadSection">
+        <div>
+          <span class="eyebrow">VOD to notes</span>
+          <h1>Generate a training plan from coach audio.</h1>
         </div>
-      </aside>
 
-      <main class="workspace">
-        <header class="topbar">
+        <button class="primary-action" type="button" id="processVod">
+          Transcribe VOD
+        </button>
+      </section>
+
+      <section class="upload-card">
+        <label class="upload-stage" id="uploadStage" for="vodInput">
+          <input id="vodInput" type="file" accept="video/*" />
+          <span class="upload-icon">MP4</span>
+          <strong>Choose or drop a VOD</strong>
+          <span class="file-chip" id="fileChip">No file selected</span>
+        </label>
+
+        <div class="video-preview" id="videoPreview" hidden>
+          <video id="vodPreview" controls></video>
+        </div>
+
+        <div class="pipeline" id="pipeline" aria-label="Processing steps"></div>
+      </section>
+
+      <section class="results-grid">
+        <article class="panel status-panel">
+          <div class="panel-header">
+            <div>
+              <span class="eyebrow">Review Notes</span>
+              <h2>Evidence-backed training plan</h2>
+            </div>
+          </div>
+          <div class="ai-output" id="aiOutput">
+            <p>Notes will appear after transcription.</p>
+          </div>
+        </article>
+
+        <article class="panel transcript-panel" id="transcriptSection">
+          <div class="panel-header">
+            <div>
+              <span class="eyebrow">Transcript</span>
+              <h2>Timestamped segments</h2>
+            </div>
+            <button class="secondary-action" type="button" data-jump="fullTranscriptSection">
+              Full Transcript
+            </button>
+          </div>
+          <div class="timeline" id="timeline"></div>
+        </article>
+      </section>
+
+      <section class="panel full-transcript-card" id="fullTranscriptSection">
+        <div class="panel-header">
           <div>
-            <span class="eyebrow">League of Legends review assistant</span>
-            <h1>Organize coach commentary into ranked improvement plans.</h1>
+            <span class="eyebrow">Full Transcript</span>
+            <h2>Raw text from the video</h2>
           </div>
-          <button class="primary-action" type="button" id="processVod">
-            Process Coached VOD
+          <button class="secondary-action" type="button" id="copyTranscript">
+            Copy Transcript
           </button>
-        </header>
+        </div>
+        <pre id="fullTranscript">No transcript yet.</pre>
+      </section>
 
-        <section class="hero-grid" id="pipelineSection" aria-label="Coached VOD workflow">
-          <article class="review-panel">
-            <div class="panel-header">
-              <div>
-                <span class="eyebrow">Upload</span>
-                <h2>VOD with coach review audio</h2>
-              </div>
-              <span class="status-pill" id="pipelineStatus">Ready</span>
-            </div>
-
-            <label class="upload-stage" id="uploadStage" for="vodInput">
-              <input id="vodInput" type="file" accept="video/*" />
-              <div class="upload-icon">MP4</div>
-              <strong>Drop coached VOD here</strong>
-              <p>
-                RankUp extracts the audio track, transcribes coaching comments,
-                detects timestamps, and classifies the League concepts being taught.
-              </p>
-              <span class="file-chip" id="fileChip">Choose a video or drop one here</span>
-            </label>
-
-            <div class="video-preview" id="videoPreview" hidden>
-              <video id="vodPreview" controls></video>
-            </div>
-
-            <div class="pipeline" id="pipeline"></div>
-          </article>
-
-          <article class="insight-panel">
-            <div class="panel-header">
-              <div>
-                <span class="eyebrow">AI Coach Notes</span>
-                <h2>Structured output</h2>
-              </div>
-            </div>
-            <div class="ai-output" id="aiOutput">
-              <p>
-                Process the coached VOD to transform raw commentary into a
-                summary, important concepts, recurring mistakes, and practice goals.
-              </p>
-            </div>
-          </article>
-        </section>
-
-        <section class="dashboard-grid" aria-label="Pipeline metrics">
-          <article class="metric-card">
-            <span class="eyebrow">Source</span>
-            <strong>Coach Audio</strong>
-            <p>Uses spoken review instead of fragile replay-file parsing.</p>
-          </article>
-          <article class="metric-card">
-            <span class="eyebrow">Transcript</span>
-            <strong>18 Segments</strong>
-            <p>Timestamped commentary is grouped into teachable moments.</p>
-          </article>
-          <article class="metric-card">
-            <span class="eyebrow">Top Theme</span>
-            <strong>Objective Tempo</strong>
-            <p>Most coaching feedback points to late dragon and Baron setup.</p>
-          </article>
-        </section>
-
-        <section class="analysis-layout">
-          <article class="chart-panel" id="transcriptSection">
-            <div class="panel-header">
-              <div>
-                <span class="eyebrow">Transcript Moments</span>
-                <h2>Coach commentary timeline</h2>
-              </div>
-              <button class="secondary-action" type="button" data-jump="fullTranscriptSection">
-                View Full Transcript
-              </button>
-            </div>
-            <div class="timeline" id="timeline"></div>
-          </article>
-
-          <article class="goals-panel" id="conceptSection">
-            <div class="panel-header">
-              <div>
-                <span class="eyebrow">Concept Map</span>
-                <h2>Important League ideas</h2>
-              </div>
-            </div>
+      <details class="optional-panel" open>
+        <summary>Details</summary>
+        <div class="optional-grid">
+          <article>
+            <h2>Coach Excerpts</h2>
             <div class="bars" id="bars"></div>
           </article>
-        </section>
-
-        <section class="analysis-layout lower-layout">
-          <article class="chart-panel full-transcript-card" id="fullTranscriptSection">
-            <div class="panel-header">
-              <div>
-                <span class="eyebrow">Full Transcript</span>
-                <h2>Raw coach audio text</h2>
-              </div>
-              <button class="secondary-action" type="button" id="copyTranscript">
-                Copy Transcript
-              </button>
-            </div>
-            <pre id="fullTranscript">Process a coached VOD to see the raw transcript here.</pre>
-          </article>
-        </section>
-
-        <section class="analysis-layout lower-layout">
-          <article class="chart-panel" id="goalSection">
-            <div class="panel-header">
-              <div>
-                <span class="eyebrow">Training Goals</span>
-                <h2>Generated from coach transcript</h2>
-              </div>
-            </div>
+          <article>
+            <h2>Action Items</h2>
             <div class="goal-list" id="goals"></div>
           </article>
-
-          <article class="goals-panel">
-            <div class="panel-header">
-              <div>
-                <span class="eyebrow">Portfolio Architecture</span>
-                <h2>Production path</h2>
-              </div>
-            </div>
-            <div class="architecture-list">
-              <div>Video upload</div>
-              <div>Audio extraction</div>
-              <div>Speech-to-text</div>
-              <div>AI concept classification</div>
-              <div>PostgreSQL trend tracking</div>
-            </div>
-          </article>
-        </section>
-      </main>
-    </div>
+        </div>
+      </details>
+    </main>
 
     <script src="script.js"></script>
   </body>
