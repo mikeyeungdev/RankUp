@@ -26,6 +26,8 @@ const processVod = document.querySelector("#processVod");
 const pipelineStatus = document.querySelector("#pipelineStatus");
 const fullTranscript = document.querySelector("#fullTranscript");
 const copyTranscript = document.querySelector("#copyTranscript");
+const loadLatest = document.querySelector("#loadLatest");
+const clearSaved = document.querySelector("#clearSaved");
 const uploadStage = document.querySelector("#uploadStage");
 const vodInput = document.querySelector("#vodInput");
 const fileChip = document.querySelector("#fileChip");
@@ -111,6 +113,7 @@ processVod.addEventListener("click", async () => {
     pipelineStatus.textContent = "Analyzed";
     processVod.textContent = "Transcription Complete";
     processVod.disabled = false;
+    vodInput.value = "";
     renderReviewResult(result);
   } catch (error) {
     steps.forEach((step) => step.classList.remove("processing"));
@@ -124,10 +127,47 @@ processVod.addEventListener("click", async () => {
   }
 });
 
+loadLatest.addEventListener("click", async () => {
+  try {
+    const response = await fetch("/api/reviews/latest");
+    const result = await response.json();
+
+    if (!response.ok) {
+      throw new Error(result.error || "No saved review found.");
+    }
+
+    pipelineStatus.textContent = result.status === "completed" ? "Loaded" : "Failed";
+
+    if (result.status === "failed") {
+      aiOutput.innerHTML = `<p><strong>Latest review failed:</strong> ${escapeHtml(result.error)}</p>`;
+      return;
+    }
+
+    renderReviewResult(result);
+  } catch (error) {
+    aiOutput.innerHTML = `<p><strong>Could not load latest review:</strong> ${escapeHtml(error.message)}</p>`;
+  }
+});
+
+clearSaved.addEventListener("click", async () => {
+  const response = await fetch("/api/reviews", { method: "DELETE" });
+  const result = await response.json();
+
+  latestTranscript = "";
+  timeline.innerHTML = emptyState("No transcript yet.");
+  bars.innerHTML = emptyState("No excerpts yet.");
+  goalList.innerHTML = emptyState("No action items yet.");
+  fullTranscript.textContent = "No transcript yet.";
+  aiOutput.innerHTML = `<p>Cleared ${result.deleted || 0} saved review file(s).</p>`;
+  pipelineStatus.textContent = "Ready";
+});
+
 function renderReviewResult(result) {
+  const sections = result.analysis.reviewSections || [];
   const concepts = result.analysis.importantConcepts || [];
   const mistakes = result.analysis.recurringMistakes || [];
   const generatedGoals = result.analysis.trainingGoals || [];
+  const drills = result.analysis.drills || [];
   const keyMoments = result.analysis.keyMoments || [];
   const segments = result.segments || [];
   latestTranscript = result.transcript || "";
@@ -152,14 +192,19 @@ function renderReviewResult(result) {
     "No clear speech detected. Try louder coach audio or set LOCAL_WHISPER_MODEL=base.";
 
   bars.innerHTML =
-    concepts.length > 0
-      ? concepts
-          .map((concept, index) => {
-            const value = Math.max(8, Math.min(100, Math.round(concept.frequency || 20)));
+    sections.length > 0 || concepts.length > 0
+      ? [...sections.map((section) => ({
+          name: section.title,
+          whyItMatters: `${section.takeaway}${section.evidence ? ` Evidence: "${section.evidence}"` : ""}`,
+          frequency: 100,
+        })), ...concepts]
+          .slice(0, 8)
+          .map((item, index) => {
+            const value = Math.max(8, Math.min(100, Math.round(item.frequency || 80)));
             return `
         <div class="bar-row">
-          <strong>${escapeHtml(concept.name)}</strong>
-          <div class="bar-track" aria-label="${escapeHtml(concept.name)}: ${value}%">
+          <strong>${escapeHtml(item.name)}</strong>
+          <div class="bar-track" aria-label="${escapeHtml(item.name)}: ${value}%">
             <div class="bar-fill" style="width: ${value}%"></div>
           </div>
           <span>${index + 1}</span>
@@ -170,8 +215,13 @@ function renderReviewResult(result) {
       : emptyState("No excerpts found.");
 
   goalList.innerHTML =
-    generatedGoals.length > 0
-      ? generatedGoals
+    generatedGoals.length > 0 || drills.length > 0
+      ? [...generatedGoals, ...drills.map((drill) => ({
+          title: drill.name,
+          description: (drill.steps || []).join(" "),
+          evidence: drill.evidence,
+        }))]
+          .slice(0, 10)
           .map(
             (goal) => `
         <div class="goal">
@@ -189,7 +239,7 @@ function renderReviewResult(result) {
       : emptyState("No action items found.");
 
   aiOutput.innerHTML =
-    concepts.length > 0 || mistakes.length > 0 || generatedGoals.length > 0 || keyMoments.length > 0
+    sections.length > 0 || concepts.length > 0 || mistakes.length > 0 || generatedGoals.length > 0 || drills.length > 0 || keyMoments.length > 0
       ? renderAnalysis(result.analysis)
       : `
         <p><strong>Transcript ready:</strong> ${escapeHtml(result.analysis.summary)}</p>
@@ -198,13 +248,33 @@ function renderReviewResult(result) {
 }
 
 function renderAnalysis(analysis) {
+  const sections = analysis.reviewSections || [];
   const concepts = analysis.importantConcepts || [];
   const mistakes = analysis.recurringMistakes || [];
   const goals = analysis.trainingGoals || [];
+  const drills = analysis.drills || [];
   const keyMoments = analysis.keyMoments || [];
+  const confidence = analysis.metadata && analysis.metadata.confidence;
 
   return `
     <p><strong>Summary:</strong> ${escapeHtml(analysis.summary)}</p>
+    ${
+      confidence
+        ? `<p><strong>Confidence:</strong> ${escapeHtml(confidence)}</p>`
+        : ""
+    }
+    ${
+      sections.length > 0
+        ? `<p><strong>Review sections:</strong></p><ul>${sections
+            .map(
+              (section) =>
+                `<li><strong>${escapeHtml(section.title)}:</strong> ${escapeHtml(section.takeaway)}${
+                  section.evidence ? ` <em>"${escapeHtml(section.evidence)}"</em>` : ""
+                }</li>`
+            )
+            .join("")}</ul>`
+        : ""
+    }
     ${
       concepts.length > 0
         ? `<p><strong>Focus areas:</strong></p><ul>${concepts
@@ -221,6 +291,18 @@ function renderAnalysis(analysis) {
             .map(
               (goal) =>
                 `<li><strong>${escapeHtml(goal.title)}:</strong> ${escapeHtml(goal.description)}</li>`
+            )
+            .join("")}</ul>`
+        : ""
+    }
+    ${
+      drills.length > 0
+        ? `<p><strong>Practice drills:</strong></p><ul>${drills
+            .map(
+              (drill) =>
+                `<li><strong>${escapeHtml(drill.name)}:</strong> ${escapeHtml(
+                  (drill.steps || []).join(" ")
+                )}${drill.evidence ? ` <em>"${escapeHtml(drill.evidence)}"</em>` : ""}</li>`
             )
             .join("")}</ul>`
         : ""
@@ -250,9 +332,11 @@ function setSelectedVod(file) {
   }
 
   selectedVod = file;
+  resetReviewState();
   fileChip.textContent = `${file.name} selected`;
   pipelineStatus.textContent = "Uploaded";
   processVod.textContent = "Transcribe VOD";
+  processVod.disabled = false;
 
   if (objectUrl) {
     URL.revokeObjectURL(objectUrl);
@@ -261,6 +345,18 @@ function setSelectedVod(file) {
   objectUrl = URL.createObjectURL(file);
   vodPreview.src = objectUrl;
   videoPreview.hidden = false;
+}
+
+function resetReviewState() {
+  latestTranscript = "";
+  document
+    .querySelectorAll(".pipeline-step")
+    .forEach((step) => step.classList.remove("complete", "processing"));
+  timeline.innerHTML = emptyState("No transcript yet.");
+  bars.innerHTML = emptyState("No excerpts yet.");
+  goalList.innerHTML = emptyState("No action items yet.");
+  fullTranscript.textContent = "No transcript yet.";
+  aiOutput.innerHTML = `<p>Ready to transcribe the selected VOD.</p>`;
 }
 
 vodInput.addEventListener("change", (event) => {

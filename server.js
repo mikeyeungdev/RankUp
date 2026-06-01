@@ -13,11 +13,18 @@ const app = express();
 const port = process.env.PORT || 3000;
 const uploadDir = path.join(__dirname, "uploads");
 const audioDir = path.join(__dirname, "processed-audio");
+const reviewDir = path.join(__dirname, "reviews");
+const knowledgeDir = path.join(__dirname, "knowledge");
+const maxSavedReviews = Number(process.env.MAX_SAVED_REVIEWS || 5);
+const knowledgeTopK = Number(process.env.KNOWLEDGE_TOP_K || 4);
+const knowledgeMaxChars = Number(process.env.KNOWLEDGE_MAX_CHARS || 1200);
 const transcribeProvider = process.env.TRANSCRIBE_PROVIDER || "local";
 const analysisProvider = process.env.ANALYSIS_PROVIDER || "local_grounded";
 
 fs.mkdirSync(uploadDir, { recursive: true });
 fs.mkdirSync(audioDir, { recursive: true });
+fs.mkdirSync(reviewDir, { recursive: true });
+fs.mkdirSync(knowledgeDir, { recursive: true });
 ffmpeg.setFfmpegPath(ffmpegPath);
 
 const upload = multer({
@@ -45,9 +52,41 @@ app.get("/api/health", (_req, res) => {
     localWhisperModel: process.env.LOCAL_WHISPER_MODEL || "base",
     ollamaHost: process.env.OLLAMA_HOST || "http://localhost:11434",
     ollamaModel: process.env.OLLAMA_MODEL || "llama3.1:8b",
+    maxSavedReviews,
+    knowledgeDocuments: listKnowledgeDocuments().length,
+    knowledgeTopK,
     transcribeModel: process.env.OPENAI_TRANSCRIBE_MODEL || "whisper-1",
     analysisModel: process.env.OPENAI_ANALYSIS_MODEL || "gpt-4.1-mini",
   });
+});
+
+app.get("/api/knowledge", (_req, res) => {
+  res.json(
+    listKnowledgeDocuments().map(({ content, ...document }) => ({
+      ...document,
+      characterCount: content.length,
+    }))
+  );
+});
+
+app.get("/api/reviews", (_req, res) => {
+  res.json(listSavedReviews());
+});
+
+app.get("/api/reviews/latest", (_req, res) => {
+  const latest = getLatestSavedReview();
+
+  if (!latest) {
+    res.status(404).json({ error: "No saved reviews yet." });
+    return;
+  }
+
+  res.json(latest);
+});
+
+app.delete("/api/reviews", (_req, res) => {
+  const deleted = clearSavedReviews();
+  res.json({ deleted });
 });
 
 app.post("/api/reviews", upload.single("vod"), async (req, res) => {
@@ -73,15 +112,39 @@ app.post("/api/reviews", upload.single("vod"), async (req, res) => {
     const transcriptText = normalizeTranscript(transcription);
     const segments = normalizeSegments(transcription, transcriptText);
     const analysis = await analyzeTranscript(transcriptText, req.file.originalname, segments);
-
-    res.json({
+    const review = {
+      id: createReviewId(),
+      createdAt: new Date().toISOString(),
+      status: "completed",
       fileName: req.file.originalname,
+      providers: {
+        transcribeProvider,
+        analysisProvider,
+        localWhisperModel: process.env.LOCAL_WHISPER_MODEL || "base",
+        ollamaModel: process.env.OLLAMA_MODEL || "llama3.1:8b",
+      },
       transcript: transcriptText,
       segments,
       analysis,
-    });
+    };
+
+    saveReview(review);
+    res.json(review);
   } catch (error) {
     console.error(error);
+    saveReview({
+      id: createReviewId(),
+      createdAt: new Date().toISOString(),
+      status: "failed",
+      fileName: req.file.originalname,
+      providers: {
+        transcribeProvider,
+        analysisProvider,
+        localWhisperModel: process.env.LOCAL_WHISPER_MODEL || "base",
+        ollamaModel: process.env.OLLAMA_MODEL || "llama3.1:8b",
+      },
+      error: error.message || "Failed to process the coached VOD.",
+    });
     res.status(500).json({
       error: error.message || "Failed to process the coached VOD.",
     });
@@ -237,7 +300,8 @@ async function analyzeTranscriptWithOllama(transcript, fileName, segments) {
 
   const ollamaHost = process.env.OLLAMA_HOST || "http://localhost:11434";
   const model = process.env.OLLAMA_MODEL || "llama3.1:8b";
-  const prompt = buildOllamaPrompt(fileName, cleanTranscript, segments);
+  const knowledgeMatches = retrieveKnowledgeDocuments(cleanTranscript);
+  const prompt = buildOllamaPrompt(fileName, cleanTranscript, segments, knowledgeMatches);
 
   const response = await fetch(`${ollamaHost}/api/generate`, {
     method: "POST",
@@ -264,17 +328,18 @@ async function analyzeTranscriptWithOllama(transcript, fileName, segments) {
   const payload = await response.json();
 
   try {
-    return normalizeOllamaAnalysis(JSON.parse(payload.response), fileName, cleanTranscript);
+    return normalizeOllamaAnalysis(JSON.parse(payload.response), fileName, cleanTranscript, knowledgeMatches);
   } catch (error) {
     throw new Error(`Ollama returned invalid JSON. ${error.message}`);
   }
 }
 
-function buildOllamaPrompt(fileName, transcript, segments) {
+function buildOllamaPrompt(fileName, transcript, segments, knowledgeMatches = []) {
   const segmentText = segments
     .slice(0, 40)
     .map((segment) => `[${formatSeconds(segment.start)}] ${segment.text}`)
     .join("\n");
+  const knowledgeContext = formatKnowledgeContext(knowledgeMatches);
 
   return `
 You are RankUp, a League of Legends coaching assistant.
@@ -283,16 +348,29 @@ Task:
 Create a concise structured training plan from a coached VOD transcript.
 
 Rules:
-- Use ONLY the transcript.
+- Use the transcript as the source of truth.
+- Use the coaching notes only to understand League concepts and organize topics that are already present in the transcript.
+- Do not introduce advice from the coaching notes unless the transcript clearly mentions that topic.
 - Do not invent events, champion details, mistakes, timestamps, or advice.
 - Every concept, mistake, and training goal must include a short exact quote from the transcript as evidence.
 - If the transcript does not support an item, omit it.
 - Prefer specific coach instructions over generic advice.
+- Extract the main sections of the coaching video when obvious.
+- Always produce 3-6 concrete training goals if the transcript has enough content.
+- Include 2-5 drills when mechanics, clears, warding, or decision routines are discussed.
+- Use timestamps from the timestamped segments when possible.
 - Keep the output useful for a student and coach to share after review.
 
 Return ONLY valid JSON with this shape:
 {
   "summary": "one concise paragraph",
+  "reviewSections": [
+    {
+      "title": "section name from transcript, e.g. Runes or Clear Paths",
+      "takeaway": "short takeaway grounded in transcript",
+      "evidence": "exact transcript quote"
+    }
+  ],
   "importantConcepts": [
     {
       "name": "short label grounded in transcript",
@@ -317,16 +395,27 @@ Return ONLY valid JSON with this shape:
       "evidence": "exact transcript quote"
     }
   ],
+  "drills": [
+    {
+      "name": "short drill name",
+      "steps": ["specific step 1", "specific step 2"],
+      "evidence": "exact transcript quote"
+    }
+  ],
   "keyMoments": [
     {
       "time": 0,
       "text": "short exact or near-exact transcript moment",
       "topic": "short label"
     }
-  ]
+  ],
+  "confidence": "low | medium | high"
 }
 
 File: ${fileName}
+
+Relevant coaching notes:
+${knowledgeContext || "No relevant coaching notes found."}
 
 Timestamped transcript segments:
 ${segmentText || "No timestamped segments available."}
@@ -336,32 +425,47 @@ ${transcript}
 `.trim();
 }
 
-function normalizeOllamaAnalysis(analysis, fileName, transcript) {
+function normalizeOllamaAnalysis(analysis, fileName, transcript, knowledgeMatches = []) {
   const summary =
     typeof analysis.summary === "string" && analysis.summary.trim()
       ? analysis.summary.trim()
       : `RankUp analyzed ${fileName} with Ollama. Review the transcript evidence before sharing.`;
 
+  const reviewSections = normalizeArray(analysis.reviewSections).slice(0, 8).map((item, index) => ({
+    title: safeString(item.title, `Section ${index + 1}`),
+    takeaway: safeString(item.takeaway, ""),
+    evidence: safeString(item.evidence, ""),
+  }));
+  const importantConcepts = normalizeArray(analysis.importantConcepts).slice(0, 6).map((item, index) => ({
+    name: safeString(item.name, `Concept ${index + 1}`),
+    category: safeString(item.category, "review_note"),
+    whyItMatters: withEvidence(item.whyItMatters, item.evidence),
+    frequency: Number.isFinite(Number(item.frequency)) ? Number(item.frequency) : 20,
+    evidence: safeString(item.evidence, ""),
+  }));
+  const trainingGoals = normalizeArray(analysis.trainingGoals).slice(0, 6).map((item, index) => ({
+    title: safeString(item.title, `Goal ${index + 1}`),
+    description: safeString(item.description, ""),
+    targetConcept: safeString(item.targetConcept, "Review note"),
+    evidence: safeString(item.evidence, ""),
+  }));
+  const drills = normalizeArray(analysis.drills).slice(0, 5).map((item, index) => ({
+    name: safeString(item.name, `Drill ${index + 1}`),
+    steps: normalizeArray(item.steps).map((step) => safeString(step, "")).filter(Boolean).slice(0, 5),
+    evidence: safeString(item.evidence, ""),
+  }));
+
   return {
     summary,
-    importantConcepts: normalizeArray(analysis.importantConcepts).slice(0, 6).map((item, index) => ({
-      name: safeString(item.name, `Concept ${index + 1}`),
-      category: safeString(item.category, "review_note"),
-      whyItMatters: withEvidence(item.whyItMatters, item.evidence),
-      frequency: Number.isFinite(Number(item.frequency)) ? Number(item.frequency) : 20,
-      evidence: safeString(item.evidence, ""),
-    })),
+    reviewSections,
+    importantConcepts,
     recurringMistakes: normalizeArray(analysis.recurringMistakes).slice(0, 5).map((item) => ({
       mistake: safeString(item.mistake, "Review issue"),
       evidence: safeString(item.evidence, ""),
       fix: safeString(item.fix, ""),
     })),
-    trainingGoals: normalizeArray(analysis.trainingGoals).slice(0, 5).map((item, index) => ({
-      title: safeString(item.title, `Goal ${index + 1}`),
-      description: safeString(item.description, ""),
-      targetConcept: safeString(item.targetConcept, "Review note"),
-      evidence: safeString(item.evidence, ""),
-    })),
+    trainingGoals,
+    drills,
     keyMoments: normalizeArray(analysis.keyMoments).slice(0, 8).map((item) => ({
       time: Number.isFinite(Number(item.time)) ? Number(item.time) : 0,
       text: safeString(item.text, ""),
@@ -370,8 +474,108 @@ function normalizeOllamaAnalysis(analysis, fileName, transcript) {
     metadata: {
       analysisMode: "ollama",
       wordCount: transcript.split(/\s+/).filter(Boolean).length,
+      confidence: safeString(analysis.confidence, "medium"),
+      knowledgeSources: knowledgeMatches.map(({ file, title, score }) => ({ file, title, score })),
     },
   };
+}
+
+function retrieveKnowledgeDocuments(transcript) {
+  const transcriptTokens = tokenizeForKnowledge(transcript);
+
+  if (!transcriptTokens.length) {
+    return [];
+  }
+
+  return listKnowledgeDocuments()
+    .map((document) => ({
+      ...document,
+      score: scoreKnowledgeDocument(transcriptTokens, document),
+    }))
+    .filter((document) => document.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, knowledgeTopK);
+}
+
+function formatKnowledgeContext(documents) {
+  return documents
+    .map((document) => {
+      const clippedContent = document.content.slice(0, knowledgeMaxChars).trim();
+      return `### ${document.title}\nSource: ${document.file}\n${clippedContent}`;
+    })
+    .join("\n\n");
+}
+
+function listKnowledgeDocuments() {
+  return fs
+    .readdirSync(knowledgeDir)
+    .filter((file) => file.endsWith(".md"))
+    .sort()
+    .map((file) => {
+      const content = fs.readFileSync(path.join(knowledgeDir, file), "utf8");
+      const titleMatch = content.match(/^#\s+(.+)$/m);
+
+      return {
+        file,
+        title: titleMatch ? titleMatch[1].trim() : file.replace(/\.md$/i, ""),
+        content,
+      };
+    });
+}
+
+function scoreKnowledgeDocument(transcriptTokens, document) {
+  const documentTokens = new Set(tokenizeForKnowledge(`${document.title} ${document.content}`));
+  let score = 0;
+
+  transcriptTokens.forEach((token) => {
+    if (documentTokens.has(token)) {
+      score += 1;
+    }
+  });
+
+  return score;
+}
+
+function tokenizeForKnowledge(text) {
+  const stopWords = new Set([
+    "about",
+    "after",
+    "again",
+    "also",
+    "because",
+    "before",
+    "coach",
+    "could",
+    "from",
+    "game",
+    "going",
+    "have",
+    "just",
+    "league",
+    "like",
+    "more",
+    "need",
+    "really",
+    "right",
+    "that",
+    "their",
+    "then",
+    "there",
+    "this",
+    "video",
+    "want",
+    "when",
+    "with",
+    "your",
+  ]);
+
+  return [...new Set(
+    String(text)
+      .toLowerCase()
+      .replace(/[^a-z0-9\s-]/g, " ")
+      .split(/\s+/)
+      .filter((token) => token.length > 2 && !stopWords.has(token))
+  )];
 }
 
 function normalizeArray(value) {
@@ -618,6 +822,82 @@ function normalizeSegments(transcription, transcriptText) {
 
 function cleanup(filePath) {
   fs.rm(filePath, { force: true }, () => {});
+}
+
+function saveReview(review) {
+  const safeName = review.fileName
+    ? review.fileName.replace(/[^a-z0-9._-]+/gi, "-").replace(/-+/g, "-")
+    : "review";
+  const fileName = `${review.createdAt.replace(/[:.]/g, "-")}-${safeName}.json`;
+  const reviewPath = path.join(reviewDir, fileName);
+  const latestPath = path.join(reviewDir, "latest-review.json");
+
+  fs.writeFileSync(reviewPath, JSON.stringify(review, null, 2));
+  fs.writeFileSync(latestPath, JSON.stringify({ ...review, savedAs: fileName }, null, 2));
+  pruneSavedReviews();
+}
+
+function listSavedReviews() {
+  return getReviewFiles()
+    .map((file) => {
+      const review = readReviewFile(file);
+
+      return {
+        id: review.id,
+        createdAt: review.createdAt,
+        status: review.status,
+        fileName: review.fileName,
+        savedAs: file,
+        transcriptLength: review.transcript ? review.transcript.length : 0,
+        segmentCount: Array.isArray(review.segments) ? review.segments.length : 0,
+      };
+    });
+}
+
+function getLatestSavedReview() {
+  const latestPath = path.join(reviewDir, "latest-review.json");
+
+  if (!fs.existsSync(latestPath)) {
+    return null;
+  }
+
+  return JSON.parse(fs.readFileSync(latestPath, "utf8"));
+}
+
+function readReviewFile(file) {
+  return JSON.parse(fs.readFileSync(path.join(reviewDir, file), "utf8"));
+}
+
+function pruneSavedReviews() {
+  const reviewFiles = getReviewFiles();
+
+  reviewFiles.slice(maxSavedReviews).forEach((file) => {
+    fs.rmSync(path.join(reviewDir, file), { force: true });
+  });
+}
+
+function clearSavedReviews() {
+  const files = fs
+    .readdirSync(reviewDir)
+    .filter((file) => file.endsWith(".json"));
+
+  files.forEach((file) => {
+    fs.rmSync(path.join(reviewDir, file), { force: true });
+  });
+
+  return files.length;
+}
+
+function getReviewFiles() {
+  return fs
+    .readdirSync(reviewDir)
+    .filter((file) => file.endsWith(".json") && file !== "latest-review.json")
+    .sort()
+    .reverse();
+}
+
+function createReviewId() {
+  return `review_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
 }
 
 function getOpenAIClient() {
