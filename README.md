@@ -14,30 +14,32 @@ The app uploads a coached VOD, extracts audio, transcribes coach commentary loca
 - Timestamped transcript segments and full transcript copy view
 - PostgreSQL schema for future review history, goals, and trend tracking
 
-## Run The App
+## Prerequisites
+
+Install these before running RankUp:
+
+- Node.js
+- Python
+- Ollama desktop app
+
+RankUp uses local Whisper for transcription and Ollama for free local analysis. The page must be opened from the running Express server, not by double-clicking `index.html`.
+
+## First-Time Setup
 
 ```powershell
 npm install
 Copy-Item .env.example .env
 npm run setup:local-whisper
-npm run dev
-```
-
-Open:
-
-```text
-http://localhost:3000
-```
-
-## Free Local AI Setup
-
-Install Ollama, then pull a model:
-
-```powershell
 ollama pull llama3.1:8b
 ```
 
-Use these `.env` settings:
+Open the Ollama desktop app before using the analyzer. If Ollama is running correctly, this URL should respond:
+
+```text
+http://localhost:11434
+```
+
+Recommended `.env` settings:
 
 ```env
 TRANSCRIBE_PROVIDER=local
@@ -48,15 +50,121 @@ LOCAL_WHISPER_MODEL=tiny
 PYTHON_COMMAND=py
 PORT=3000
 MAX_SAVED_REVIEWS=5
-KNOWLEDGE_TOP_K=4
-KNOWLEDGE_MAX_CHARS=1200
+KNOWLEDGE_TOP_K=3
+KNOWLEDGE_MAX_CHARS=900
+OLLAMA_TIMEOUT_MS=120000
+OLLAMA_TRANSCRIPT_MAX_CHARS=9000
 ```
 
-If Ollama is not installed or running, switch back to extraction-only mode:
+## Run The App
+
+```powershell
+npm run dev
+```
+
+Open:
+
+```text
+http://localhost:3000
+```
+
+## How To Analyze A VOD
+
+1. Open the Ollama desktop app.
+2. Start RankUp with `npm run dev`.
+3. Open `http://localhost:3000`.
+4. Choose or drag in a coached League of Legends VOD.
+5. Click `Transcribe VOD`.
+6. Wait for the loading states:
+   - Extracting audio
+   - Transcribing coach audio
+   - Retrieving coaching fundamentals
+   - Building training plan
+7. Review the generated notes and compare them against the transcript.
+8. Use `Full Transcript` to inspect the raw transcript.
+9. Use `Copy Transcript` if you want to save or share the transcript.
+
+The best input is a VOD that already contains spoken coach review audio. RankUp is designed around coach commentary, not silent gameplay.
+
+## Output Sections
+
+RankUp produces:
+
+- Summary: the main lesson from the coached VOD
+- Review sections: transcript-backed themes from the video
+- Focus areas: organized concepts such as macro, positioning, objective control, vision, jungle pathing, or wave management
+- Training goals: concrete next-game actions
+- Practice drills: repeatable exercises when the transcript supports them
+- Key moments: timestamped transcript excerpts
+- Full transcript: raw speech-to-text output for verification
+
+Every generated coaching item should include transcript evidence. If something looks wrong, check the transcript first; poor audio can cause poor analysis.
+
+## Saved Reviews
+
+RankUp saves recent review outputs in `reviews/`.
+
+- `Load Latest` loads the newest saved result.
+- `Clear Saved` deletes saved review JSON files.
+- `MAX_SAVED_REVIEWS` controls how many completed reviews are kept.
+
+The `reviews/`, `uploads/`, and `processed-audio/` folders are local runtime data and should not be committed.
+
+## Fallback Modes
+
+If Ollama is slow, returns empty JSON, or returns malformed JSON, RankUp falls back to transcript-grounded extraction. You will still get direct coach excerpts and action items, but the result may be less structured than full Ollama analysis.
+
+To skip Ollama entirely:
 
 ```env
 ANALYSIS_PROVIDER=local_grounded
 ```
+
+This mode is faster and free, but it produces simpler notes.
+
+## Troubleshooting
+
+If the page loads forever:
+
+Refresh `http://localhost:3000`, then restart the server if needed:
+
+```powershell
+npm run dev
+```
+
+Make sure Ollama is open and the model exists:
+
+```powershell
+ollama pull llama3.1:8b
+```
+
+If transcription fails with `No module named 'faster_whisper'`:
+
+```powershell
+npm run setup:local-whisper
+```
+
+If Python still cannot import `faster_whisper`, check which Python `py` is using:
+
+```powershell
+py -c "import sys; print(sys.executable)"
+py -c "from faster_whisper import WhisperModel; print('ok')"
+```
+
+If port `3000` is already in use:
+
+```powershell
+npm run stop
+npm run dev
+```
+
+If the analysis is weak:
+
+- Check `Full Transcript` for transcription quality.
+- Use a VOD with clear coach audio.
+- Keep Ollama running during analysis.
+- Try a shorter VOD segment.
+- Increase `LOCAL_WHISPER_MODEL` from `tiny` to `base` for better transcription accuracy.
 
 ## Workflow
 

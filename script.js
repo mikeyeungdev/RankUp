@@ -39,6 +39,7 @@ const jumpButtons = document.querySelectorAll("[data-jump]");
 let selectedVod = null;
 let objectUrl = null;
 let latestTranscript = "";
+let progressTimer = null;
 
 pipeline.innerHTML = pipelineSteps
   .map(
@@ -75,9 +76,9 @@ processVod.addEventListener("click", async () => {
   }
 
   processVod.disabled = true;
-  processVod.textContent = "Transcribing...";
+  processVod.textContent = "Processing...";
   pipelineStatus.textContent = "Working";
-  aiOutput.innerHTML = `<p class="placeholder">Extracting audio from ${selectedVod.name}...</p>`;
+  startProcessingVisual(selectedVod.name);
 
   const steps = document.querySelectorAll(".pipeline-step");
   steps.forEach((step) => step.classList.remove("complete", "processing"));
@@ -108,14 +109,16 @@ processVod.addEventListener("click", async () => {
       throw new Error(result.error || "VOD processing failed.");
     }
 
+    stopProcessingVisual();
     steps.forEach((step) => step.classList.add("complete"));
     steps.forEach((step) => step.classList.remove("processing"));
     pipelineStatus.textContent = "Analyzed";
-    processVod.textContent = "Transcription Complete";
+    processVod.textContent = "Analyze Another VOD";
     processVod.disabled = false;
     vodInput.value = "";
     renderReviewResult(result);
   } catch (error) {
+    stopProcessingVisual();
     steps.forEach((step) => step.classList.remove("processing"));
     pipelineStatus.textContent = "Needs Attention";
     processVod.textContent = "Transcribe VOD";
@@ -171,6 +174,7 @@ function renderReviewResult(result) {
   const keyMoments = result.analysis.keyMoments || [];
   const segments = result.segments || [];
   latestTranscript = result.transcript || "";
+  const hasAnalysis = hasStructuredReview(result.analysis);
 
   timeline.innerHTML =
     segments.length > 0
@@ -198,7 +202,7 @@ function renderReviewResult(result) {
           whyItMatters: `${section.takeaway}${section.evidence ? ` Evidence: "${section.evidence}"` : ""}`,
           frequency: 100,
         })), ...concepts]
-          .slice(0, 8)
+          .slice(0, 10)
           .map((item, index) => {
             const value = Math.max(8, Math.min(100, Math.round(item.frequency || 80)));
             return `
@@ -221,7 +225,7 @@ function renderReviewResult(result) {
           description: (drill.steps || []).join(" "),
           evidence: drill.evidence,
         }))]
-          .slice(0, 10)
+          .slice(0, 12)
           .map(
             (goal) => `
         <div class="goal">
@@ -239,12 +243,106 @@ function renderReviewResult(result) {
       : emptyState("No action items found.");
 
   aiOutput.innerHTML =
-    sections.length > 0 || concepts.length > 0 || mistakes.length > 0 || generatedGoals.length > 0 || drills.length > 0 || keyMoments.length > 0
-      ? renderAnalysis(result.analysis)
+    hasAnalysis
+      ? `${renderDoneBanner(result.analysis)}${renderAnalysis(result.analysis)}`
       : `
+        ${renderDoneBanner(result.analysis, "Transcript only")}
         <p><strong>Transcript ready:</strong> ${escapeHtml(result.analysis.summary)}</p>
-        <p class="placeholder">Check the transcript for audio quality, then retry with Ollama running.</p>
+        <p class="placeholder">No structured training plan came back. Check the transcript for audio quality, confirm Ollama is running, then retry.</p>
       `;
+}
+
+function startProcessingVisual(fileName) {
+  stopProcessingVisual();
+
+  const stages = [
+    {
+      title: "Extracting audio",
+      detail: `Reading coach commentary from ${fileName}.`,
+      percent: 22,
+    },
+    {
+      title: "Transcribing coach audio",
+      detail: "Local Whisper is creating timestamped transcript segments.",
+      percent: 48,
+    },
+    {
+      title: "Retrieving coaching fundamentals",
+      detail: "RankUp is matching the transcript to League coaching notes.",
+      percent: 68,
+    },
+    {
+      title: "Building training plan",
+      detail: "Ollama is organizing transcript-backed focus areas and goals.",
+      percent: 86,
+    },
+  ];
+  let stageIndex = 0;
+
+  renderProgressCard(stages[stageIndex]);
+  progressTimer = window.setInterval(() => {
+    stageIndex = Math.min(stageIndex + 1, stages.length - 1);
+    renderProgressCard(stages[stageIndex]);
+  }, 2600);
+}
+
+function stopProcessingVisual() {
+  if (progressTimer) {
+    window.clearInterval(progressTimer);
+    progressTimer = null;
+  }
+}
+
+function renderProgressCard(stage) {
+  aiOutput.innerHTML = `
+    <div class="analysis-state is-loading" role="status" aria-live="polite">
+      <div class="spinner" aria-hidden="true"></div>
+      <div>
+        <strong>${escapeHtml(stage.title)}</strong>
+        <p>${escapeHtml(stage.detail)}</p>
+      </div>
+    </div>
+    <div class="progress-meter" aria-label="Analysis progress">
+      <span style="width: ${stage.percent}%"></span>
+    </div>
+  `;
+}
+
+function renderDoneBanner(analysis, labelOverride) {
+  const mode = analysis.metadata && analysis.metadata.analysisMode;
+  const usedFallback = typeof mode === "string" && mode.includes("local_grounded");
+  const label =
+    labelOverride ||
+    (mode === "ollama"
+      ? "Ollama analysis complete"
+      : usedFallback
+        ? "Transcript-grounded fallback complete"
+        : "Analysis complete");
+  const detail =
+    usedFallback
+      ? "Ollama did not return a usable structured plan in time. RankUp used direct transcript extraction so you still have review material."
+      : "RankUp generated transcript-backed notes and action items.";
+
+  return `
+    <div class="analysis-state is-done">
+      <div class="done-mark" aria-hidden="true">OK</div>
+      <div>
+        <strong>${escapeHtml(label)}</strong>
+        <p>${escapeHtml(detail)}</p>
+      </div>
+    </div>
+  `;
+}
+
+function hasStructuredReview(analysis) {
+  return [
+    analysis.reviewSections,
+    analysis.importantConcepts,
+    analysis.recurringMistakes,
+    analysis.trainingGoals,
+    analysis.drills,
+    analysis.keyMoments,
+  ].some((items) => Array.isArray(items) && items.length > 0);
 }
 
 function renderAnalysis(analysis) {

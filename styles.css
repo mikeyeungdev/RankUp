@@ -330,6 +330,72 @@ h2 {
   color: var(--gold);
 }
 
+.analysis-state {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  padding: 13px;
+  border: 1px solid var(--line);
+  background: var(--surface-2);
+}
+
+.analysis-state p {
+  margin-top: 4px;
+  font-size: 0.9rem;
+}
+
+.analysis-state.is-loading {
+  border-color: rgba(214, 169, 74, 0.62);
+}
+
+.analysis-state.is-done {
+  border-color: rgba(66, 198, 181, 0.56);
+  background: rgba(66, 198, 181, 0.08);
+}
+
+.spinner,
+.done-mark {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+}
+
+.spinner {
+  border: 3px solid rgba(214, 169, 74, 0.2);
+  border-top-color: var(--gold);
+  border-radius: 50%;
+  animation: spin 900ms linear infinite;
+}
+
+.done-mark {
+  color: #101318;
+  background: var(--teal);
+  font-size: 0.76rem;
+  font-weight: 950;
+}
+
+.progress-meter {
+  height: 10px;
+  overflow: hidden;
+  background: #0f141a;
+  border: 1px solid var(--line);
+}
+
+.progress-meter span {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, var(--gold), var(--teal));
+  transition: width 420ms ease;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .full-transcript-card {
   margin-top: 14px;
 }

@@ -13,6 +13,8 @@ Core coaching model:
 - Slow pushing builds a larger wave that can support a dive, roam, reset, or objective move.
 - Freezing can deny farm, create gank pressure, and keep the player safer when ahead or vulnerable.
 - Poor wave control often causes late recalls, missed farm, bad roams, and avoidable ganks.
+- Lane fundamentals are not only CS. They include level timers, cooldown tracking, trading around minion waves, recall windows, jungle threat, and matchup identity.
+- A roam is usually only good if the wave state protects the player from losing too much farm, plate pressure, or tempo.
 
 Review questions:
 - What was the intended wave state: freeze, slow push, fast push, or reset?
@@ -24,3 +26,5 @@ Training goals:
 - Review three lane waves and label the correct action: hold, thin, slow push, crash, or reset.
 - Practice crashing before recall so the next wave does not punish the player.
 - Track missed CS from poor wave decisions separately from missed CS from mechanics.
+- Review the first four waves and identify whether the player respected level 2, level 3, and first recall timing.
+- Before every trade, check wave size, key cooldowns, jungle location, and level advantage.

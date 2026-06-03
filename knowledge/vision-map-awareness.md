@@ -13,6 +13,8 @@ Core coaching model:
 - Clearing enemy vision is as important as placing allied vision because it controls what the enemy can safely start.
 - Map awareness is a repeatable habit: track missing enemies, jungle pathing, wave states, and objective timers.
 - Face-checking is often a planning error before it is a mechanics error.
+- Good vision has timing. A ward placed too late may confirm a danger the player can no longer avoid.
+- Map awareness should create predictions, not only reactions. The player should infer where enemies can be from waves, recalls, camps, and objective timers.
 
 Review questions:
 - What decision did this ward support?
@@ -24,3 +26,5 @@ Training goals:
 - Before crossing river or entering jungle, identify which enemies are visible and which are missing.
 - On every reset, decide whether the next control ward supports lane safety, objective setup, or flank denial.
 - In VOD review, tag every death from fog as missing info, ignored info, or forced face-check.
+- Review every ward and label it as defensive, offensive, objective, lane, flank, or wasted.
+- Set a habit trigger: check minimap after each last hit, ability cast, or camera movement break.
