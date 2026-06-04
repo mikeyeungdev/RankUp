@@ -8,9 +8,11 @@ const multer = require("multer");
 const ffmpeg = require("fluent-ffmpeg");
 const ffmpegPath = require("ffmpeg-static");
 const OpenAI = require("openai");
+const { Pool } = require("pg");
 
 const app = express();
 const port = process.env.PORT || 3000;
+const databaseUrl = process.env.DATABASE_URL || "";
 const uploadDir = path.join(__dirname, "uploads");
 const audioDir = path.join(__dirname, "processed-audio");
 const reviewDir = path.join(__dirname, "reviews");
@@ -22,6 +24,7 @@ const ollamaTimeoutMs = Number(process.env.OLLAMA_TIMEOUT_MS || 120000);
 const ollamaTranscriptMaxChars = Number(process.env.OLLAMA_TRANSCRIPT_MAX_CHARS || 9000);
 const transcribeProvider = process.env.TRANSCRIBE_PROVIDER || "local";
 const analysisProvider = process.env.ANALYSIS_PROVIDER || "local_grounded";
+const db = databaseUrl ? new Pool({ connectionString: databaseUrl }) : null;
 
 fs.mkdirSync(uploadDir, { recursive: true });
 fs.mkdirSync(audioDir, { recursive: true });
@@ -51,6 +54,7 @@ app.get("/api/health", (_req, res) => {
     hasOpenAIKey: Boolean(process.env.OPENAI_API_KEY),
     transcribeProvider,
     analysisProvider,
+    hasDatabase: Boolean(db),
     localWhisperModel: process.env.LOCAL_WHISPER_MODEL || "base",
     ollamaHost: process.env.OLLAMA_HOST || "http://localhost:11434",
     ollamaModel: process.env.OLLAMA_MODEL || "llama3.1:8b",
@@ -73,12 +77,12 @@ app.get("/api/knowledge", (_req, res) => {
   );
 });
 
-app.get("/api/reviews", (_req, res) => {
-  res.json(listSavedReviews());
+app.get("/api/reviews", async (_req, res) => {
+  res.json(await listReviewSummaries());
 });
 
-app.get("/api/reviews/latest", (_req, res) => {
-  const latest = getLatestSavedReview();
+app.get("/api/reviews/latest", async (_req, res) => {
+  const latest = await getLatestReview();
 
   if (!latest) {
     res.status(404).json({ error: "No saved reviews yet." });
@@ -88,9 +92,24 @@ app.get("/api/reviews/latest", (_req, res) => {
   res.json(latest);
 });
 
+app.get("/api/reviews/:id", async (req, res) => {
+  const review = await getReviewById(req.params.id);
+
+  if (!review) {
+    res.status(404).json({ error: "Review not found." });
+    return;
+  }
+
+  res.json(review);
+});
+
 app.delete("/api/reviews", (_req, res) => {
   const deleted = clearSavedReviews();
   res.json({ deleted });
+});
+
+app.get("/api/dashboard", async (_req, res) => {
+  res.json(await getDashboardSummary());
 });
 
 app.post("/api/reviews", upload.single("vod"), async (req, res) => {
@@ -132,11 +151,11 @@ app.post("/api/reviews", upload.single("vod"), async (req, res) => {
       analysis,
     };
 
-    saveReview(review);
+    await saveReview(review);
     res.json(review);
   } catch (error) {
     console.error(error);
-    saveReview({
+    await saveReview({
       id: createReviewId(),
       createdAt: new Date().toISOString(),
       status: "failed",
@@ -1370,7 +1389,7 @@ function cleanup(filePath) {
   fs.rm(filePath, { force: true }, () => {});
 }
 
-function saveReview(review) {
+async function saveReview(review) {
   const safeName = review.fileName
     ? review.fileName.replace(/[^a-z0-9._-]+/gi, "-").replace(/-+/g, "-")
     : "review";
@@ -1381,6 +1400,26 @@ function saveReview(review) {
   fs.writeFileSync(reviewPath, JSON.stringify(review, null, 2));
   fs.writeFileSync(latestPath, JSON.stringify({ ...review, savedAs: fileName }, null, 2));
   pruneSavedReviews();
+
+  if (db) {
+    try {
+      await saveReviewToDatabase(review, fileName);
+    } catch (error) {
+      console.error(`PostgreSQL save failed: ${error.message}`);
+    }
+  }
+}
+
+async function listReviewSummaries() {
+  if (db) {
+    try {
+      return await listDatabaseReviews();
+    } catch (error) {
+      console.error(`PostgreSQL review list failed: ${error.message}`);
+    }
+  }
+
+  return listSavedReviews();
 }
 
 function listSavedReviews() {
@@ -1398,6 +1437,47 @@ function listSavedReviews() {
         segmentCount: Array.isArray(review.segments) ? review.segments.length : 0,
       };
     });
+}
+
+async function getLatestReview() {
+  if (db) {
+    try {
+      const latest = await getLatestDatabaseReview();
+
+      if (latest) {
+        return latest;
+      }
+    } catch (error) {
+      console.error(`PostgreSQL latest review failed: ${error.message}`);
+    }
+  }
+
+  return getLatestSavedReview();
+}
+
+async function getReviewById(id) {
+  if (db) {
+    try {
+      await initializeDatabase();
+      const result = await db.query("SELECT raw_review FROM rankup_reviews WHERE id = $1 LIMIT 1", [id]);
+
+      if (result.rows[0]) {
+        return result.rows[0].raw_review;
+      }
+    } catch (error) {
+      console.error(`PostgreSQL review lookup failed: ${error.message}`);
+    }
+  }
+
+  const file = getReviewFiles().find((reviewFile) => {
+    try {
+      return readReviewFile(reviewFile).id === id;
+    } catch (_error) {
+      return false;
+    }
+  });
+
+  return file ? { ...readReviewFile(file), savedAs: file } : null;
 }
 
 function getLatestSavedReview() {
@@ -1444,6 +1524,376 @@ function getReviewFiles() {
 
 function createReviewId() {
   return `review_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
+}
+
+async function initializeDatabase() {
+  if (!db) {
+    return;
+  }
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS rankup_reviews (
+      id TEXT PRIMARY KEY,
+      created_at TIMESTAMPTZ NOT NULL,
+      status TEXT NOT NULL,
+      file_name TEXT NOT NULL,
+      saved_as TEXT,
+      transcript TEXT,
+      analysis_summary TEXT,
+      analysis_mode TEXT,
+      confidence TEXT,
+      transcribe_provider TEXT,
+      analysis_provider TEXT,
+      local_whisper_model TEXT,
+      ollama_model TEXT,
+      word_count INTEGER,
+      segment_count INTEGER NOT NULL DEFAULT 0,
+      raw_review JSONB NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS rankup_review_segments (
+      id BIGSERIAL PRIMARY KEY,
+      review_id TEXT NOT NULL REFERENCES rankup_reviews(id) ON DELETE CASCADE,
+      start_seconds INTEGER NOT NULL,
+      end_seconds INTEGER,
+      text TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS rankup_focus_areas (
+      id BIGSERIAL PRIMARY KEY,
+      review_id TEXT NOT NULL REFERENCES rankup_reviews(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      category TEXT NOT NULL,
+      why_it_matters TEXT,
+      evidence TEXT,
+      frequency INTEGER
+    );
+
+    CREATE TABLE IF NOT EXISTS rankup_recurring_mistakes (
+      id BIGSERIAL PRIMARY KEY,
+      review_id TEXT NOT NULL REFERENCES rankup_reviews(id) ON DELETE CASCADE,
+      mistake TEXT NOT NULL,
+      fix TEXT,
+      evidence TEXT
+    );
+
+    CREATE TABLE IF NOT EXISTS rankup_training_goals (
+      id BIGSERIAL PRIMARY KEY,
+      review_id TEXT NOT NULL REFERENCES rankup_reviews(id) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      description TEXT,
+      target_concept TEXT,
+      evidence TEXT,
+      status TEXT NOT NULL DEFAULT 'active',
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS rankup_knowledge_sources (
+      id BIGSERIAL PRIMARY KEY,
+      review_id TEXT NOT NULL REFERENCES rankup_reviews(id) ON DELETE CASCADE,
+      file_name TEXT NOT NULL,
+      title TEXT,
+      score INTEGER
+    );
+  `);
+}
+
+async function saveReviewToDatabase(review, savedAs) {
+  await initializeDatabase();
+
+  const analysis = review.analysis || {};
+  const metadata = analysis.metadata || {};
+  const client = await db.connect();
+
+  try {
+    await client.query("BEGIN");
+    await client.query(
+      `
+        INSERT INTO rankup_reviews (
+          id,
+          created_at,
+          status,
+          file_name,
+          saved_as,
+          transcript,
+          analysis_summary,
+          analysis_mode,
+          confidence,
+          transcribe_provider,
+          analysis_provider,
+          local_whisper_model,
+          ollama_model,
+          word_count,
+          segment_count,
+          raw_review
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        ON CONFLICT (id) DO UPDATE SET
+          raw_review = EXCLUDED.raw_review,
+          analysis_summary = EXCLUDED.analysis_summary,
+          analysis_mode = EXCLUDED.analysis_mode,
+          confidence = EXCLUDED.confidence
+      `,
+      [
+        review.id,
+        review.createdAt,
+        review.status,
+        review.fileName,
+        savedAs,
+        review.transcript || "",
+        analysis.summary || review.error || "",
+        metadata.analysisMode || "",
+        metadata.confidence || "",
+        review.providers ? review.providers.transcribeProvider : "",
+        review.providers ? review.providers.analysisProvider : "",
+        review.providers ? review.providers.localWhisperModel : "",
+        review.providers ? review.providers.ollamaModel : "",
+        metadata.wordCount || countWords(review.transcript || ""),
+        Array.isArray(review.segments) ? review.segments.length : 0,
+        JSON.stringify(review),
+      ]
+    );
+
+    await client.query("DELETE FROM rankup_review_segments WHERE review_id = $1", [review.id]);
+    await client.query("DELETE FROM rankup_focus_areas WHERE review_id = $1", [review.id]);
+    await client.query("DELETE FROM rankup_recurring_mistakes WHERE review_id = $1", [review.id]);
+    await client.query("DELETE FROM rankup_training_goals WHERE review_id = $1", [review.id]);
+    await client.query("DELETE FROM rankup_knowledge_sources WHERE review_id = $1", [review.id]);
+
+    for (const segment of normalizeArray(review.segments)) {
+      await client.query(
+        "INSERT INTO rankup_review_segments (review_id, start_seconds, end_seconds, text) VALUES ($1, $2, $3, $4)",
+        [review.id, Math.round(segment.start || 0), Math.round(segment.end || 0), segment.text || ""]
+      );
+    }
+
+    for (const concept of normalizeArray(analysis.importantConcepts)) {
+      await client.query(
+        `
+          INSERT INTO rankup_focus_areas (review_id, name, category, why_it_matters, evidence, frequency)
+          VALUES ($1, $2, $3, $4, $5, $6)
+        `,
+        [
+          review.id,
+          concept.name || "Focus area",
+          concept.category || "review_note",
+          concept.whyItMatters || "",
+          concept.evidence || "",
+          Number.isFinite(Number(concept.frequency)) ? Number(concept.frequency) : null,
+        ]
+      );
+    }
+
+    for (const mistake of normalizeArray(analysis.recurringMistakes)) {
+      await client.query(
+        "INSERT INTO rankup_recurring_mistakes (review_id, mistake, fix, evidence) VALUES ($1, $2, $3, $4)",
+        [review.id, mistake.mistake || "Recurring mistake", mistake.fix || "", mistake.evidence || ""]
+      );
+    }
+
+    for (const goal of normalizeArray(analysis.trainingGoals)) {
+      await client.query(
+        `
+          INSERT INTO rankup_training_goals (review_id, title, description, target_concept, evidence)
+          VALUES ($1, $2, $3, $4, $5)
+        `,
+        [
+          review.id,
+          goal.title || "Training goal",
+          goal.description || "",
+          goal.targetConcept || "",
+          goal.evidence || "",
+        ]
+      );
+    }
+
+    for (const source of normalizeArray(metadata.knowledgeSources)) {
+      await client.query(
+        "INSERT INTO rankup_knowledge_sources (review_id, file_name, title, score) VALUES ($1, $2, $3, $4)",
+        [review.id, source.file || source.file_name || "", source.title || "", Number(source.score) || 0]
+      );
+    }
+
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+async function listDatabaseReviews() {
+  await initializeDatabase();
+  const result = await db.query(`
+    SELECT
+      id,
+      created_at,
+      status,
+      file_name,
+      saved_as,
+      LENGTH(COALESCE(transcript, '')) AS transcript_length,
+      segment_count,
+      analysis_mode,
+      confidence
+    FROM rankup_reviews
+    ORDER BY created_at DESC
+    LIMIT 50
+  `);
+
+  return result.rows.map((row) => ({
+    id: row.id,
+    createdAt: row.created_at,
+    status: row.status,
+    fileName: row.file_name,
+    savedAs: row.saved_as,
+    transcriptLength: Number(row.transcript_length || 0),
+    segmentCount: row.segment_count,
+    analysisMode: row.analysis_mode,
+    confidence: row.confidence,
+  }));
+}
+
+async function getLatestDatabaseReview() {
+  await initializeDatabase();
+  const result = await db.query("SELECT raw_review FROM rankup_reviews ORDER BY created_at DESC LIMIT 1");
+  return result.rows[0] ? result.rows[0].raw_review : null;
+}
+
+async function getDashboardSummary() {
+  if (!db) {
+    return getJsonDashboardSummary();
+  }
+
+  try {
+    await initializeDatabase();
+    const [totals, focusAreas, goals, recentReviews] = await Promise.all([
+      db.query(`
+        SELECT
+          COUNT(*)::int AS total_reviews,
+          COUNT(*) FILTER (WHERE status = 'completed')::int AS completed_reviews,
+          COUNT(*) FILTER (WHERE analysis_mode = 'ollama')::int AS ollama_reviews,
+          MAX(created_at) AS last_review_at
+        FROM rankup_reviews
+      `),
+      db.query(`
+        SELECT name, category, COUNT(*)::int AS count
+        FROM rankup_focus_areas
+        GROUP BY name, category
+        ORDER BY count DESC, name ASC
+        LIMIT 8
+      `),
+      db.query(`
+        SELECT
+          goal.id,
+          goal.review_id,
+          review.file_name,
+          review.created_at,
+          goal.title,
+          goal.description,
+          goal.target_concept,
+          goal.evidence,
+          goal.status
+        FROM rankup_training_goals goal
+        JOIN rankup_reviews review ON review.id = goal.review_id
+        ORDER BY review.created_at DESC, goal.id ASC
+        LIMIT 24
+      `),
+      db.query(`
+        SELECT id, file_name, created_at, analysis_mode, confidence, analysis_summary
+        FROM rankup_reviews
+        ORDER BY created_at DESC
+        LIMIT 8
+      `),
+    ]);
+
+    return {
+      source: "postgres",
+      totals: totals.rows[0],
+      topFocusAreas: focusAreas.rows,
+      recommendedGoals: goals.rows,
+      recentReviews: recentReviews.rows,
+    };
+  } catch (error) {
+    console.error(`PostgreSQL dashboard failed: ${error.message}`);
+    return getJsonDashboardSummary();
+  }
+}
+
+function getJsonDashboardSummary() {
+  const reviews = getReviewFiles().map((file) => ({ ...readReviewFile(file), savedAs: file }));
+  const completedReviews = reviews.filter((review) => review.status === "completed");
+  const focusAreas = countItems(
+    completedReviews.flatMap((review) => normalizeArray(review.analysis && review.analysis.importantConcepts)),
+    "name"
+  );
+  const goals = completedReviews.flatMap((review) =>
+    normalizeArray(review.analysis && review.analysis.trainingGoals).map((goal, index) => ({
+      id: `${review.id}_${index}`,
+      review_id: review.id,
+      file_name: review.fileName,
+      created_at: review.createdAt,
+      title: goal.title,
+      description: goal.description,
+      target_concept: goal.targetConcept,
+      evidence: goal.evidence,
+      status: goal.status || "active",
+    }))
+  );
+
+  return {
+    source: "json",
+    totals: {
+      total_reviews: reviews.length,
+      completed_reviews: completedReviews.length,
+      ollama_reviews: completedReviews.filter(
+        (review) => review.analysis && review.analysis.metadata && review.analysis.metadata.analysisMode === "ollama"
+      ).length,
+      last_review_at: reviews[0] ? reviews[0].createdAt : null,
+    },
+    topFocusAreas: focusAreas.slice(0, 8),
+    recommendedGoals: goals.slice(0, 24),
+    recentReviews: reviews.slice(0, 8).map((review) => ({
+      id: review.id,
+      file_name: review.fileName,
+      created_at: review.createdAt,
+      analysis_mode: review.analysis && review.analysis.metadata ? review.analysis.metadata.analysisMode : "",
+      confidence: review.analysis && review.analysis.metadata ? review.analysis.metadata.confidence : "",
+      analysis_summary: review.analysis ? review.analysis.summary : review.error,
+    })),
+  };
+}
+
+function countItems(items, key) {
+  const counts = new Map();
+
+  items.forEach((item) => {
+    const label = item && item[key] ? item[key] : "Unknown";
+    const current = counts.get(label) || { name: label, title: label, mistake: label, count: 0 };
+    current.count += 1;
+    current.category = item.category || current.category || "review_note";
+    current.fix = item.fix || current.fix || "";
+    current.description = item.description || current.description || "";
+    current.target_concept = item.targetConcept || current.target_concept || "";
+    counts.set(label, current);
+  });
+
+  return [...counts.values()].sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+}
+
+function buildJsonReviewTrend(reviews) {
+  const counts = new Map();
+
+  reviews.forEach((review) => {
+    const day = (review.createdAt || "").slice(0, 10) || "unknown";
+    counts.set(day, (counts.get(day) || 0) + 1);
+  });
+
+  return [...counts.entries()].map(([day, count]) => ({ day, count })).sort((a, b) => a.day.localeCompare(b.day));
+}
+
+function countWords(value) {
+  return String(value).trim().split(/\s+/).filter(Boolean).length;
 }
 
 function getOpenAIClient() {

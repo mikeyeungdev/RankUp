@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>RankUp | Review Dashboard</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="dashboard.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="app-header">
+        <div class="brand">
+          <div class="brand-mark">R</div>
+          <div>
+            <strong>RankUp</strong>
+            <span>Review history dashboard</span>
+          </div>
+        </div>
+        <nav class="top-nav" aria-label="RankUp navigation">
+          <a class="nav-link" href="/">Analyzer</a>
+          <a class="nav-link active" href="/dashboard.html">Dashboard</a>
+        </nav>
+      </header>
+
+      <section class="hero dashboard-hero">
+        <div>
+          <h1>Manage student goals from past VOD reviews.</h1>
+          <p>
+            Track recommended training goals, revisit full reviews, and keep
+            coach notes tied to the transcript evidence.
+          </p>
+        </div>
+        <span class="status-pill" id="dataSource">Loading</span>
+      </section>
+
+      <section class="metric-grid" id="metricGrid" aria-label="Review metrics"></section>
+
+      <section class="dashboard-shell">
+        <section class="panel goals-panel">
+          <div class="panel-header">
+            <div>
+              <span class="eyebrow">Active Work</span>
+              <h2>Recommended Training Goals</h2>
+            </div>
+          </div>
+          <div class="dashboard-list" id="goals"></div>
+        </section>
+
+        <aside class="dashboard-sidebar">
+          <section class="panel">
+            <div class="panel-header">
+              <div>
+                <span class="eyebrow">Patterns</span>
+                <h2>Repeated Focus Areas</h2>
+              </div>
+            </div>
+            <div class="dashboard-list" id="focusAreas"></div>
+          </section>
+
+          <section class="panel history-panel">
+            <div class="panel-header">
+              <div>
+                <span class="eyebrow">History</span>
+                <h2>Previous Reviews</h2>
+              </div>
+            </div>
+            <div class="review-table" id="recentReviews"></div>
+          </section>
+        </aside>
+      </section>
+
+      <section class="panel review-detail-panel" id="reviewDetail" hidden>
+        <div class="panel-header">
+          <div>
+            <span class="eyebrow">Selected Review</span>
+            <h2 id="reviewDetailTitle">Review</h2>
+          </div>
+          <button class="secondary-action" type="button" id="closeReviewDetail">Close</button>
+        </div>
+        <div class="review-detail" id="reviewDetailBody"></div>
+      </section>
+    </main>
+
+    <script src="dashboard.js"></script>
+  </body>
+</html>

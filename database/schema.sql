@@ -1,73 +1,63 @@
-CREATE TABLE players (
-  id UUID PRIMARY KEY,
-  summoner_name TEXT NOT NULL,
-  region TEXT NOT NULL,
-  main_role TEXT NOT NULL,
-  current_rank TEXT,
-  target_rank TEXT,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+CREATE TABLE IF NOT EXISTS rankup_reviews (
+  id TEXT PRIMARY KEY,
+  created_at TIMESTAMPTZ NOT NULL,
+  status TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  saved_as TEXT,
+  transcript TEXT,
+  analysis_summary TEXT,
+  analysis_mode TEXT,
+  confidence TEXT,
+  transcribe_provider TEXT,
+  analysis_provider TEXT,
+  local_whisper_model TEXT,
+  ollama_model TEXT,
+  word_count INTEGER,
+  segment_count INTEGER NOT NULL DEFAULT 0,
+  raw_review JSONB NOT NULL
 );
 
-CREATE TABLE coached_vods (
-  id UUID PRIMARY KEY,
-  player_id UUID NOT NULL REFERENCES players(id),
-  champion TEXT NOT NULL,
-  role TEXT NOT NULL,
-  matchup TEXT,
-  result TEXT CHECK (result IN ('win', 'loss')),
-  video_url TEXT NOT NULL,
-  audio_url TEXT,
-  duration_seconds INTEGER,
-  processing_status TEXT NOT NULL DEFAULT 'uploaded' CHECK (
-    processing_status IN ('uploaded', 'audio_extracted', 'transcribed', 'analyzed', 'failed')
-  ),
-  uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE transcript_segments (
-  id UUID PRIMARY KEY,
-  vod_id UUID NOT NULL REFERENCES coached_vods(id) ON DELETE CASCADE,
+CREATE TABLE IF NOT EXISTS rankup_review_segments (
+  id BIGSERIAL PRIMARY KEY,
+  review_id TEXT NOT NULL REFERENCES rankup_reviews(id) ON DELETE CASCADE,
   start_seconds INTEGER NOT NULL,
   end_seconds INTEGER,
-  speaker TEXT NOT NULL DEFAULT 'coach',
-  transcript_text TEXT NOT NULL,
-  confidence NUMERIC(4, 3),
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  text TEXT NOT NULL
 );
 
-CREATE TABLE league_concepts (
-  id UUID PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE,
-  category TEXT NOT NULL CHECK (
-    category IN ('laning', 'macro', 'vision', 'objective_control', 'jungle_tracking', 'teamfighting')
-  )
+CREATE TABLE IF NOT EXISTS rankup_focus_areas (
+  id BIGSERIAL PRIMARY KEY,
+  review_id TEXT NOT NULL REFERENCES rankup_reviews(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  category TEXT NOT NULL,
+  why_it_matters TEXT,
+  evidence TEXT,
+  frequency INTEGER
 );
 
-CREATE TABLE segment_concepts (
-  segment_id UUID NOT NULL REFERENCES transcript_segments(id) ON DELETE CASCADE,
-  concept_id UUID NOT NULL REFERENCES league_concepts(id),
-  severity INTEGER CHECK (severity BETWEEN 1 AND 5),
-  PRIMARY KEY (segment_id, concept_id)
+CREATE TABLE IF NOT EXISTS rankup_recurring_mistakes (
+  id BIGSERIAL PRIMARY KEY,
+  review_id TEXT NOT NULL REFERENCES rankup_reviews(id) ON DELETE CASCADE,
+  mistake TEXT NOT NULL,
+  fix TEXT,
+  evidence TEXT
 );
 
-CREATE TABLE ai_reports (
-  id UUID PRIMARY KEY,
-  vod_id UUID NOT NULL REFERENCES coached_vods(id) ON DELETE CASCADE,
-  summary TEXT NOT NULL,
-  important_concepts JSONB NOT NULL,
-  recurring_mistakes JSONB NOT NULL,
-  recommendations JSONB NOT NULL,
-  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
-CREATE TABLE training_goals (
-  id UUID PRIMARY KEY,
-  player_id UUID NOT NULL REFERENCES players(id),
-  source_report_id UUID REFERENCES ai_reports(id) ON DELETE SET NULL,
+CREATE TABLE IF NOT EXISTS rankup_training_goals (
+  id BIGSERIAL PRIMARY KEY,
+  review_id TEXT NOT NULL REFERENCES rankup_reviews(id) ON DELETE CASCADE,
   title TEXT NOT NULL,
-  description TEXT NOT NULL,
-  target_concept TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'completed', 'paused')),
-  due_date DATE,
+  description TEXT,
+  target_concept TEXT,
+  evidence TEXT,
+  status TEXT NOT NULL DEFAULT 'active',
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS rankup_knowledge_sources (
+  id BIGSERIAL PRIMARY KEY,
+  review_id TEXT NOT NULL REFERENCES rankup_reviews(id) ON DELETE CASCADE,
+  file_name TEXT NOT NULL,
+  title TEXT,
+  score INTEGER
 );
