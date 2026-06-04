@@ -1,0 +1,20 @@
+{
+  "name": "rankup",
+  "version": "1.0.0",
+  "description": "League of Legends coached VOD transcription and review assistant.",
+  "main": "server.js",
+  "scripts": {
+    "dev": "node server.js",
+    "start": "node server.js",
+    "setup:local-whisper": "py -m pip install -r requirements.txt",
+    "stop": "powershell -NoProfile -Command \"Get-Process node -ErrorAction SilentlyContinue | Stop-Process -Force\""
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2",
+    "ffmpeg-static": "^5.2.0",
+    "fluent-ffmpeg": "^2.1.3",
+    "multer": "^2.0.2",
+    "openai": "^4.77.0"
+  }
+}

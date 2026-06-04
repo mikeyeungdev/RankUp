@@ -1,2 +1,7 @@
 tools/
 gh_*.zip
+node_modules/
+.env
+uploads/
+processed-audio/
+reviews/

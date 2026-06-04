@@ -3,132 +3,108 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>RankUp | League VOD Review</title>
+    <title>RankUp | VOD Transcript Review</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <div class="app-shell">
-      <aside class="sidebar" aria-label="Primary navigation">
+    <main class="app">
+      <header class="app-header">
         <div class="brand">
           <div class="brand-mark">R</div>
           <div>
             <strong>RankUp</strong>
-            <span>LoL VOD Review</span>
+            <span>League review notes</span>
           </div>
         </div>
+        <span class="status-pill" id="pipelineStatus">Ready</span>
+      </header>
 
-        <nav class="nav-list">
-          <button class="nav-item active" type="button">Dashboard</button>
-          <button class="nav-item" type="button">VOD Review</button>
-          <button class="nav-item" type="button">Mistakes</button>
-          <button class="nav-item" type="button">Goals</button>
-        </nav>
-
-        <div class="player-card">
-          <span class="eyebrow">Tracked Player</span>
-          <strong>Mid Lane Review Set</strong>
-          <p>Gold II to Platinum push</p>
+      <section class="hero" id="uploadSection">
+        <div>
+          <span class="eyebrow">VOD to notes</span>
+          <h1>Generate a training plan from coach audio.</h1>
         </div>
-      </aside>
 
-      <main class="workspace">
-        <header class="topbar">
+        <button class="primary-action" type="button" id="processVod">
+          Transcribe VOD
+        </button>
+        <button class="secondary-action" type="button" id="loadLatest">
+          Load Latest
+        </button>
+        <button class="secondary-action" type="button" id="clearSaved">
+          Clear Saved
+        </button>
+      </section>
+
+      <section class="upload-card">
+        <label class="upload-stage" id="uploadStage" for="vodInput">
+          <input id="vodInput" type="file" accept="video/*" />
+          <span class="upload-icon">MP4</span>
+          <strong>Choose or drop a VOD</strong>
+          <span class="file-chip" id="fileChip">No file selected</span>
+        </label>
+
+        <div class="video-preview" id="videoPreview" hidden>
+          <video id="vodPreview" controls></video>
+        </div>
+
+        <div class="pipeline" id="pipeline" aria-label="Processing steps"></div>
+      </section>
+
+      <section class="results-grid">
+        <article class="panel status-panel">
+          <div class="panel-header">
+            <div>
+              <span class="eyebrow">Review Notes</span>
+              <h2>Evidence-backed training plan</h2>
+            </div>
+          </div>
+          <div class="ai-output" id="aiOutput">
+            <p>Notes will appear after transcription.</p>
+          </div>
+        </article>
+
+        <article class="panel transcript-panel" id="transcriptSection">
+          <div class="panel-header">
+            <div>
+              <span class="eyebrow">Transcript</span>
+              <h2>Timestamped segments</h2>
+            </div>
+            <button class="secondary-action" type="button" data-jump="fullTranscriptSection">
+              Full Transcript
+            </button>
+          </div>
+          <div class="timeline" id="timeline"></div>
+        </article>
+      </section>
+
+      <section class="panel full-transcript-card" id="fullTranscriptSection">
+        <div class="panel-header">
           <div>
-            <span class="eyebrow">Patch 14.10 sample dataset</span>
-            <h1>Turn League VODs into focused training plans.</h1>
+            <span class="eyebrow">Full Transcript</span>
+            <h2>Raw text from the video</h2>
           </div>
-          <button class="primary-action" type="button" id="generateInsights">
-            Generate AI Review
+          <button class="secondary-action" type="button" id="copyTranscript">
+            Copy Transcript
           </button>
-        </header>
+        </div>
+        <pre id="fullTranscript">No transcript yet.</pre>
+      </section>
 
-        <section class="hero-grid" aria-label="Project overview">
-          <article class="review-panel">
-            <div class="panel-header">
-              <div>
-                <span class="eyebrow">Current VOD</span>
-                <h2>Ahri vs. Orianna - ranked solo queue</h2>
-              </div>
-              <span class="status-pill">Reviewing</span>
-            </div>
-
-            <div class="video-frame">
-              <div class="rift-map" aria-hidden="true">
-                <div class="lane top"></div>
-                <div class="lane mid"></div>
-                <div class="lane bot"></div>
-                <div class="river"></div>
-                <div class="objective baron">B</div>
-                <div class="objective dragon">D</div>
-                <div class="marker marker-blue"></div>
-                <div class="marker marker-red"></div>
-              </div>
-              <div class="video-overlay">
-                <strong>23:18</strong>
-                <span>Dragon setup, mid priority lost</span>
-              </div>
-            </div>
-
-            <div class="timeline" id="timeline"></div>
-          </article>
-
-          <article class="insight-panel">
-            <div class="panel-header">
-              <div>
-                <span class="eyebrow">AI Summary</span>
-                <h2>Actionable review output</h2>
-              </div>
-            </div>
-            <div class="ai-output" id="aiOutput">
-              <p>
-                Select Generate AI Review to convert timestamp notes into a
-                coach-style summary with repeat mistakes and practice goals.
-              </p>
-            </div>
-          </article>
-        </section>
-
-        <section class="dashboard-grid" aria-label="Analytics dashboard">
-          <article class="metric-card">
-            <span class="eyebrow">Primary Leak</span>
-            <strong>Objective Setup</strong>
-            <p>42% of tagged mistakes happen before dragon or Baron fights.</p>
-          </article>
-          <article class="metric-card">
-            <span class="eyebrow">Improvement</span>
-            <strong>+18%</strong>
-            <p>Fewer late rotations across the last five reviewed games.</p>
-          </article>
-          <article class="metric-card">
-            <span class="eyebrow">Training Focus</span>
-            <strong>Vision Timer</strong>
-            <p>Place control ward 45 seconds before neutral objectives.</p>
-          </article>
-        </section>
-
-        <section class="analysis-layout">
-          <article class="chart-panel">
-            <div class="panel-header">
-              <div>
-                <span class="eyebrow">Mistake Categories</span>
-                <h2>Pattern breakdown</h2>
-              </div>
-            </div>
+      <details class="optional-panel" open>
+        <summary>Details</summary>
+        <div class="optional-grid">
+          <article>
+            <h2>Coach Excerpts</h2>
             <div class="bars" id="bars"></div>
           </article>
-
-          <article class="goals-panel">
-            <div class="panel-header">
-              <div>
-                <span class="eyebrow">Training Goals</span>
-                <h2>This week</h2>
-              </div>
-            </div>
+          <article>
+            <h2>Action Items</h2>
             <div class="goal-list" id="goals"></div>
           </article>
-        </section>
-      </main>
-    </div>
+        </div>
+      </details>
+    </main>
 
     <script src="script.js"></script>
   </body>
