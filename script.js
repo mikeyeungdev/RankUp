@@ -56,8 +56,12 @@ pipeline.innerHTML = pipelineSteps
   .join("");
 
 timeline.innerHTML = emptyState("No transcript yet.");
-bars.innerHTML = emptyState("No excerpts yet.");
-goalList.innerHTML = emptyState("No action items yet.");
+if (bars) {
+  bars.innerHTML = emptyState("No excerpts yet.");
+}
+if (goalList) {
+  goalList.innerHTML = emptyState("No action items yet.");
+}
 
 processVod.addEventListener("click", async () => {
   if (window.location.protocol === "file:") {
@@ -76,7 +80,7 @@ processVod.addEventListener("click", async () => {
   }
 
   processVod.disabled = true;
-  processVod.textContent = "Processing...";
+  processVod.textContent = "Analyzing...";
   pipelineStatus.textContent = "Working";
   startProcessingVisual(selectedVod.name);
 
@@ -121,7 +125,7 @@ processVod.addEventListener("click", async () => {
     stopProcessingVisual();
     steps.forEach((step) => step.classList.remove("processing"));
     pipelineStatus.textContent = "Needs Attention";
-    processVod.textContent = "Transcribe VOD";
+    processVod.textContent = "Analyze VOD";
     processVod.disabled = false;
     aiOutput.innerHTML = `
       <p><strong>Processing failed:</strong> ${error.message}</p>
@@ -158,8 +162,12 @@ clearSaved.addEventListener("click", async () => {
 
   latestTranscript = "";
   timeline.innerHTML = emptyState("No transcript yet.");
-  bars.innerHTML = emptyState("No excerpts yet.");
-  goalList.innerHTML = emptyState("No action items yet.");
+  if (bars) {
+    bars.innerHTML = emptyState("No excerpts yet.");
+  }
+  if (goalList) {
+    goalList.innerHTML = emptyState("No action items yet.");
+  }
   fullTranscript.textContent = "No transcript yet.";
   aiOutput.innerHTML = `<p>Cleared ${result.deleted || 0} saved review file(s).</p>`;
   pipelineStatus.textContent = "Ready";
@@ -195,52 +203,56 @@ function renderReviewResult(result) {
     latestTranscript.trim() ||
     "No clear speech detected. Try louder coach audio or set LOCAL_WHISPER_MODEL=base.";
 
-  bars.innerHTML =
-    sections.length > 0 || concepts.length > 0
-      ? [...sections.map((section) => ({
-          name: section.title,
-          whyItMatters: `${section.takeaway}${section.evidence ? ` Evidence: "${section.evidence}"` : ""}`,
-          frequency: 100,
-        })), ...concepts]
-          .slice(0, 10)
-          .map((item, index) => {
-            const value = Math.max(8, Math.min(100, Math.round(item.frequency || 80)));
-            return `
-        <div class="bar-row">
-          <strong>${escapeHtml(item.name)}</strong>
-          <div class="bar-track" aria-label="${escapeHtml(item.name)}: ${value}%">
-            <div class="bar-fill" style="width: ${value}%"></div>
+  if (bars) {
+    bars.innerHTML =
+      sections.length > 0 || concepts.length > 0
+        ? [...sections.map((section) => ({
+            name: section.title,
+            whyItMatters: `${section.takeaway}${section.evidence ? ` Evidence: "${section.evidence}"` : ""}`,
+            frequency: 100,
+          })), ...concepts]
+            .slice(0, 10)
+            .map((item, index) => {
+              const value = Math.max(8, Math.min(100, Math.round(item.frequency || 80)));
+              return `
+          <div class="bar-row">
+            <strong>${escapeHtml(item.name)}</strong>
+            <div class="bar-track" aria-label="${escapeHtml(item.name)}: ${value}%">
+              <div class="bar-fill" style="width: ${value}%"></div>
+            </div>
+            <span>${index + 1}</span>
           </div>
-          <span>${index + 1}</span>
-        </div>
-      `;
-          })
-          .join("")
-      : emptyState("No excerpts found.");
+        `;
+            })
+            .join("")
+        : emptyState("No excerpts found.");
+  }
 
-  goalList.innerHTML =
-    generatedGoals.length > 0 || drills.length > 0
-      ? [...generatedGoals, ...drills.map((drill) => ({
-          title: drill.name,
-          description: (drill.steps || []).join(" "),
-          evidence: drill.evidence,
-        }))]
-          .slice(0, 12)
-          .map(
-            (goal) => `
-        <div class="goal">
-          <strong>${escapeHtml(goal.title)}</strong>
-          <p>${escapeHtml(goal.description)}</p>
-          ${
-            goal.evidence
-              ? `<small>Evidence: "${escapeHtml(goal.evidence)}"</small>`
-              : ""
-          }
-        </div>
-      `
-          )
-          .join("")
-      : emptyState("No action items found.");
+  if (goalList) {
+    goalList.innerHTML =
+      generatedGoals.length > 0 || drills.length > 0
+        ? [...generatedGoals, ...drills.map((drill) => ({
+            title: drill.name,
+            description: (drill.steps || []).join(" "),
+            evidence: drill.evidence,
+          }))]
+            .slice(0, 12)
+            .map(
+              (goal) => `
+          <div class="goal">
+            <strong>${escapeHtml(goal.title)}</strong>
+            <p>${escapeHtml(goal.description)}</p>
+            ${
+              goal.evidence
+                ? `<small>Evidence: "${escapeHtml(goal.evidence)}"</small>`
+                : ""
+            }
+          </div>
+        `
+            )
+            .join("")
+        : emptyState("No action items found.");
+  }
 
   aiOutput.innerHTML =
     hasAnalysis
@@ -433,7 +445,7 @@ function setSelectedVod(file) {
   resetReviewState();
   fileChip.textContent = `${file.name} selected`;
   pipelineStatus.textContent = "Uploaded";
-  processVod.textContent = "Transcribe VOD";
+  processVod.textContent = "Analyze VOD";
   processVod.disabled = false;
 
   if (objectUrl) {
@@ -451,8 +463,12 @@ function resetReviewState() {
     .querySelectorAll(".pipeline-step")
     .forEach((step) => step.classList.remove("complete", "processing"));
   timeline.innerHTML = emptyState("No transcript yet.");
-  bars.innerHTML = emptyState("No excerpts yet.");
-  goalList.innerHTML = emptyState("No action items yet.");
+  if (bars) {
+    bars.innerHTML = emptyState("No excerpts yet.");
+  }
+  if (goalList) {
+    goalList.innerHTML = emptyState("No action items yet.");
+  }
   fullTranscript.textContent = "No transcript yet.";
   aiOutput.innerHTML = `<p>Ready to transcribe the selected VOD.</p>`;
 }

@@ -74,7 +74,7 @@ http://localhost:3000
 2. Start RankUp with `npm run dev`.
 3. Open `http://localhost:3000`.
 4. Choose or drag in a coached League of Legends VOD.
-5. Click `Transcribe VOD`.
+5. Click `Analyze VOD`.
 6. Wait for the loading states:
    - Extracting audio
    - Transcribing coach audio
@@ -99,6 +99,54 @@ RankUp produces:
 - Full transcript: raw speech-to-text output for verification
 
 Every generated coaching item should include transcript evidence. If something looks wrong, check the transcript first; poor audio can cause poor analysis.
+
+## Review History Dashboard
+
+Open the dashboard at:
+
+```text
+http://localhost:3000/dashboard.html
+```
+
+The dashboard tracks review history across analyzed VODs:
+
+- total reviews
+- completed reviews
+- Ollama-assisted reviews
+- top focus areas
+- editable recommended training goals
+- recent review summaries
+- previous VOD analysis details
+
+RankUp can run the dashboard from local JSON files, but PostgreSQL unlocks the full persistence story for a portfolio demo.
+
+## PostgreSQL Setup
+
+Create a local database:
+
+```powershell
+createdb rankup
+```
+
+Add this to `.env`:
+
+```env
+DATABASE_URL=postgres://postgres:postgres@localhost:5432/rankup
+```
+
+Then start the app:
+
+```powershell
+npm run dev
+```
+
+RankUp automatically creates the dashboard tables when the database is configured. You can also run the schema manually:
+
+```powershell
+psql "postgres://postgres:postgres@localhost:5432/rankup" -f database/schema.sql
+```
+
+If `DATABASE_URL` is missing or PostgreSQL is unavailable, RankUp falls back to the existing JSON files in `reviews/`.
 
 ## Saved Reviews
 
@@ -200,4 +248,5 @@ Keep each file practical: define the concept, list decision rules, and include d
 - faster-whisper local transcription
 - Ollama local LLM analysis
 - Local markdown retrieval for League coaching notes
-- Static HTML, CSS, and JavaScript UI
+- PostgreSQL-backed review history dashboard with JSON fallback
+- React frontend with Vite-powered local development
