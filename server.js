@@ -45,7 +45,6 @@ const upload = multer({
   },
 });
 
-app.use(express.static(__dirname));
 app.use(express.json());
 
 app.get("/api/health", (_req, res) => {
@@ -177,25 +176,49 @@ app.post("/api/reviews", upload.single("vod"), async (req, res) => {
   }
 });
 
-app.use((error, _req, res, _next) => {
-  res.status(400).json({ error: error.message || "Upload failed." });
-});
+startServer();
 
-const server = app.listen(port, () => {
-  console.log(`RankUp running at http://localhost:${port}`);
-});
+async function startServer() {
+  await configureFrontend();
 
-server.on("error", (error) => {
-  if (error.code === "EADDRINUSE") {
-    console.error(
-      `Port ${port} is already in use. RankUp may already be running at http://localhost:${port}.`
-    );
-    console.error(`Stop the existing server or set PORT=${Number(port) + 1} in .env.`);
-    process.exit(1);
+  app.use((error, _req, res, _next) => {
+    res.status(400).json({ error: error.message || "Upload failed." });
+  });
+
+  const server = app.listen(port, () => {
+    console.log(`RankUp running at http://localhost:${port}`);
+  });
+
+  server.on("error", (error) => {
+    if (error.code === "EADDRINUSE") {
+      console.error(
+        `Port ${port} is already in use. RankUp may already be running at http://localhost:${port}.`
+      );
+      console.error(`Stop the existing server or set PORT=${Number(port) + 1} in .env.`);
+      process.exit(1);
+    }
+
+    throw error;
+  });
+}
+
+async function configureFrontend() {
+  if (process.env.NODE_ENV === "production") {
+    const distDir = path.join(__dirname, "dist");
+    app.use(express.static(distDir));
+    app.get("*", (_req, res) => {
+      res.sendFile(path.join(distDir, "index.html"));
+    });
+    return;
   }
 
-  throw error;
-});
+  const { createServer } = await import("vite");
+  const vite = await createServer({
+    server: { middlewareMode: true },
+    appType: "spa",
+  });
+  app.use(vite.middlewares);
+}
 
 function extractAudio(inputPath, outputPath) {
   return new Promise((resolve, reject) => {

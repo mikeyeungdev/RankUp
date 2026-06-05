@@ -1,6 +1,7 @@
 tools/
 gh_*.zip
 node_modules/
+dist/
 .env
 uploads/
 processed-audio/

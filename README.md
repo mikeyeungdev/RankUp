@@ -249,4 +249,4 @@ Keep each file practical: define the concept, list decision rules, and include d
 - Ollama local LLM analysis
 - Local markdown retrieval for League coaching notes
 - PostgreSQL-backed review history dashboard with JSON fallback
-- Static HTML, CSS, and JavaScript UI
+- React frontend with Vite-powered local development
