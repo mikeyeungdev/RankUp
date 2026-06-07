@@ -47,7 +47,6 @@
   gap: 16px;
 }
 
-.dashboard-list,
 .review-table,
 .review-detail {
   display: grid;
@@ -67,13 +66,6 @@
   padding: 12px;
 }
 
-.dashboard-item header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
 .dashboard-item strong,
 .review-row strong {
   color: var(--text);
@@ -86,18 +78,6 @@
   color: var(--muted);
   font-size: 0.9rem;
   line-height: 1.45;
-}
-
-.count-pill {
-  flex: 0 0 auto;
-  min-width: 28px;
-  padding: 5px 8px;
-  color: #101318;
-  border-radius: 999px;
-  background: var(--gold);
-  font-size: 0.78rem;
-  font-weight: 900;
-  text-align: center;
 }
 
 .goal-card {
@@ -256,6 +236,153 @@
 
 .goal-editor-actions .secondary-action {
   min-width: 130px;
+}
+
+.todo-list {
+  display: grid;
+  gap: 8px;
+}
+
+.todo-item {
+  display: grid;
+  grid-template-columns: 26px minmax(0, 1fr);
+  gap: 10px;
+  align-items: start;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.todo-check {
+  width: 20px;
+  height: 20px;
+  margin-top: 2px;
+  border: 2px solid var(--gold);
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.todo-check:hover {
+  background: rgba(217, 173, 79, 0.16);
+}
+
+.todo-item.is-completed {
+  opacity: 0.72;
+}
+
+.todo-item.is-completed .todo-check {
+  border-color: var(--teal);
+  background: var(--teal);
+  box-shadow: inset 0 0 0 4px var(--surface-2);
+}
+
+.todo-item.is-completed h3,
+.todo-item.is-completed p {
+  text-decoration: line-through;
+}
+
+.todo-content {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  cursor: text;
+}
+
+.todo-title-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.todo-title-row h3 {
+  min-width: 180px;
+  color: var(--text);
+  font-size: 0.98rem;
+  line-height: 1.35;
+}
+
+.todo-title-row small,
+.todo-save-state {
+  color: var(--muted-2);
+  font-size: 0.82rem;
+}
+
+.todo-content p {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.todo-note {
+  padding-left: 10px;
+  border-left: 2px solid var(--teal);
+}
+
+.todo-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.todo-editor input,
+.todo-editor textarea {
+  width: 100%;
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #0f141a;
+  font: inherit;
+}
+
+.todo-editor input {
+  min-height: 40px;
+  padding: 0 10px;
+  font-weight: 800;
+}
+
+.todo-editor textarea {
+  min-height: 76px;
+  resize: vertical;
+  padding: 10px;
+}
+
+.todo-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.todo-actions small {
+  margin-right: auto;
+  color: var(--teal);
+}
+
+.primary-save {
+  color: #101318;
+  background: var(--gold);
+}
+
+.completed-goals {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.completed-goals summary {
+  width: fit-content;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 850;
+}
+
+.completed-list {
+  margin-top: 10px;
 }
 
 .review-row {

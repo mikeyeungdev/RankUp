@@ -308,11 +308,22 @@ function Analyzer() {
 function Dashboard() {
   const [dashboard, setDashboard] = useState(null);
   const [selectedReview, setSelectedReview] = useState(null);
+  const [isReviewLoading, setIsReviewLoading] = useState(false);
   const [error, setError] = useState("");
 
   useEffect(() => {
     loadDashboard();
   }, []);
+
+  useEffect(() => {
+    if (!isReviewLoading && !selectedReview) {
+      return;
+    }
+
+    window.setTimeout(() => {
+      document.querySelector("#reviewDetail")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 0);
+  }, [isReviewLoading, selectedReview]);
 
   async function loadDashboard() {
     try {
@@ -328,13 +339,24 @@ function Dashboard() {
   }
 
   async function openReview(reviewId) {
-    const response = await fetch(`/api/reviews/${encodeURIComponent(reviewId)}`);
-    const result = await response.json();
-    setSelectedReview(response.ok ? result : { error: result.error || "Could not load review." });
+    setIsReviewLoading(true);
+    setSelectedReview(null);
+
+    try {
+      const response = await fetch(`/api/reviews/${encodeURIComponent(reviewId)}`);
+      const result = await response.json();
+      setSelectedReview(response.ok ? result : { error: result.error || "Could not load review." });
+    } catch (requestError) {
+      setSelectedReview({ error: requestError.message || "Could not load review." });
+    } finally {
+      setIsReviewLoading(false);
+    }
   }
 
   const totals = dashboard?.totals || {};
   const recommendedGoals = dashboard?.recommendedGoals || [];
+  const activeGoals = recommendedGoals.filter((goal) => getGoalStatus(goal) !== "completed");
+  const completedGoals = recommendedGoals.filter((goal) => getGoalStatus(goal) === "completed");
 
   return (
     <>
@@ -361,24 +383,21 @@ function Dashboard() {
 
       <section className="dashboard-shell">
         <section className="panel goals-panel">
-          <PanelHeader eyebrow="Active Work" title="Recommended Training Goals" />
-          <div className="dashboard-list">
-            {recommendedGoals.length ? recommendedGoals.map((goal) => <GoalCard key={goal.id} goal={goal} onSave={loadDashboard} />) : <EmptyState message="No recommended goals yet." />}
+          <PanelHeader eyebrow="Active Work" title="Training Goals" />
+          <div className="todo-list">
+            {activeGoals.length ? activeGoals.map((goal) => <GoalTodo key={goal.id} goal={goal} onSave={loadDashboard} />) : <EmptyState message="No active goals yet." />}
           </div>
+          {completedGoals.length ? (
+            <details className="completed-goals">
+              <summary>Completed Goals ({completedGoals.length})</summary>
+              <div className="todo-list completed-list">
+                {completedGoals.map((goal) => <GoalTodo key={goal.id} goal={goal} onSave={loadDashboard} />)}
+              </div>
+            </details>
+          ) : null}
         </section>
 
         <aside className="dashboard-sidebar">
-          <section className="panel">
-            <PanelHeader eyebrow="Patterns" title="Repeated Focus Areas" />
-            <div className="dashboard-list">
-              {(dashboard?.topFocusAreas || []).length ? (
-                dashboard.topFocusAreas.map((item) => <PatternCard key={item.name} item={item} />)
-              ) : (
-                <EmptyState message="No repeated focus areas yet." />
-              )}
-            </div>
-          </section>
-
           <section className="panel history-panel">
             <PanelHeader eyebrow="History" title="Previous Reviews" />
             <div className="review-table">
@@ -394,26 +413,51 @@ function Dashboard() {
         </aside>
       </section>
 
+      {isReviewLoading ? (
+        <section className="panel review-detail-panel" id="reviewDetail">
+          <PanelHeader eyebrow="Selected Review" title="Loading review" />
+          <p>Loading review details...</p>
+        </section>
+      ) : null}
       {selectedReview ? <ReviewDetail review={selectedReview} onClose={() => setSelectedReview(null)} /> : null}
     </>
   );
 }
 
-function GoalCard({ goal, onSave }) {
+function GoalTodo({ goal, onSave }) {
   const [edit, setEdit] = useState(() => readGoalEdit(goal));
   const [saveState, setSaveState] = useState("");
+  const [isEditing, setIsEditing] = useState(false);
   const status = edit.status || goal.status || "active";
+  const title = edit.title ?? goal.title ?? "Training goal";
+  const description = edit.description ?? goal.description ?? "";
   const note = edit.note ?? goal.coach_note ?? "";
 
-  async function saveGoal() {
-    const updated = { ...edit, status, note, updatedAt: new Date().toISOString() };
+  async function saveGoal(nextValues = {}) {
+    const nextStatus = nextValues.status || status;
+    const nextTitle = nextValues.title ?? title;
+    const nextDescription = nextValues.description ?? description;
+    const nextNote = nextValues.note ?? note;
+    const updated = {
+      ...edit,
+      status: nextStatus,
+      title: nextTitle,
+      description: nextDescription,
+      note: nextNote,
+      updatedAt: new Date().toISOString(),
+    };
     setSaveState("Saving...");
 
     try {
       const response = await fetch(`/api/goals/${encodeURIComponent(goal.id)}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ status, coachNote: note }),
+        body: JSON.stringify({
+          status: nextStatus,
+          title: nextTitle,
+          description: nextDescription,
+          coachNote: nextNote,
+        }),
       });
       const savedGoal = await response.json();
 
@@ -424,6 +468,8 @@ function GoalCard({ goal, onSave }) {
       localStorage.removeItem(goalStorageKey(goal.id));
       setEdit({
         status: savedGoal.status,
+        title: savedGoal.title || nextTitle,
+        description: savedGoal.description || "",
         note: savedGoal.coach_note || "",
         updatedAt: savedGoal.updated_at,
       });
@@ -436,53 +482,61 @@ function GoalCard({ goal, onSave }) {
     }
   }
 
+  async function toggleCompleted(event) {
+    event.stopPropagation();
+    const nextStatus = status === "completed" ? "active" : "completed";
+    setEdit((current) => ({ ...current, status: nextStatus }));
+    await saveGoal({ status: nextStatus });
+  }
+
   return (
-    <article className="goal-card">
-      <div className="goal-summary">
-        <div className="goal-title-row">
-          <span className={`goal-status ${status}`}>{status}</span>
-          <small>{goal.file_name || "Review"} - {formatDate(goal.created_at)}</small>
-        </div>
-        <h3>{goal.title || "Training goal"}</h3>
-        <p>{goal.description || ""}</p>
-        {goal.evidence ? <blockquote>Evidence: "{goal.evidence}"</blockquote> : null}
-        {note ? (
-          <div className="saved-note">
-            <strong>Coach note</strong>
-            <p>{note}</p>
-          </div>
-        ) : null}
-      </div>
-      <details className="goal-editor">
-        <summary>Edit goal</summary>
-        <div className="goal-editor-body">
-          <div className="status-control" role="radiogroup" aria-label="Goal status">
-            {["active", "completed", "paused"].map((option) => (
-              <button
-                className={`status-choice ${status === option ? "selected" : ""}`}
-                key={option}
-                type="button"
-                role="radio"
-                aria-checked={status === option}
-                onClick={() => setEdit((current) => ({ ...current, status: option }))}
-              >
-                {option}
+    <article className={`todo-item ${status === "completed" ? "is-completed" : ""}`}>
+      <button
+        className="todo-check"
+        type="button"
+        aria-label={status === "completed" ? "Mark goal active" : "Mark goal completed"}
+        onClick={toggleCompleted}
+      />
+      <div className="todo-content" role="button" tabIndex={0} onClick={() => setIsEditing(true)} onKeyDown={(event) => event.key === "Enter" && setIsEditing(true)}>
+        {isEditing ? (
+          <div className="todo-editor" onClick={(event) => event.stopPropagation()}>
+            <input
+              value={title}
+              onChange={(event) => setEdit((current) => ({ ...current, title: event.target.value }))}
+              placeholder="Training goal"
+            />
+            <textarea
+              value={description}
+              onChange={(event) => setEdit((current) => ({ ...current, description: event.target.value }))}
+              placeholder="Describe the next rep or habit"
+            />
+            <textarea
+              value={note}
+              onChange={(event) => setEdit((current) => ({ ...current, note: event.target.value }))}
+              placeholder="Coach note"
+            />
+            <div className="todo-actions">
+              <small>{saveState || (edit.updatedAt ? `Saved ${formatDate(edit.updatedAt)}` : "")}</small>
+              <button className="secondary-action" type="button" onClick={() => setIsEditing(false)}>
+                Cancel
               </button>
-            ))}
+              <button className="secondary-action primary-save" type="button" onClick={() => saveGoal().then(() => setIsEditing(false))}>
+                Save
+              </button>
+            </div>
           </div>
-          <textarea
-            value={note}
-            onChange={(event) => setEdit((current) => ({ ...current, note: event.target.value }))}
-            placeholder="Add a coaching note or next check-in"
-          />
-          <div className="goal-editor-actions">
-            <small>{saveState || (edit.updatedAt ? `Saved ${formatDate(edit.updatedAt)}` : "")}</small>
-            <button className="secondary-action" type="button" onClick={saveGoal}>
-              Save changes
-            </button>
-          </div>
-        </div>
-      </details>
+        ) : (
+          <>
+            <div className="todo-title-row">
+              <h3>{title}</h3>
+              <small>{goal.file_name || "Review"} - {formatDate(goal.created_at)}</small>
+            </div>
+            {description ? <p>{description}</p> : null}
+            {note ? <p className="todo-note">{note}</p> : null}
+            {saveState ? <small className="todo-save-state">{saveState}</small> : null}
+          </>
+        )}
+      </div>
     </article>
   );
 }
@@ -613,7 +667,7 @@ function Pipeline({ currentIndex }) {
 function ReviewDetail({ review, onClose }) {
   if (review.error) {
     return (
-      <section className="panel review-detail-panel">
+      <section className="panel review-detail-panel" id="reviewDetail">
         <PanelHeader eyebrow="Selected Review" title="Review not found" action={<button className="secondary-action" type="button" onClick={onClose}>Close</button>} />
         <p>{review.error}</p>
       </section>
@@ -622,7 +676,7 @@ function ReviewDetail({ review, onClose }) {
 
   const analysis = review.analysis || {};
   return (
-    <section className="panel review-detail-panel">
+    <section className="panel review-detail-panel" id="reviewDetail">
       <PanelHeader eyebrow="Selected Review" title={review.fileName || "Review"} action={<button className="secondary-action" type="button" onClick={onClose}>Close</button>} />
       <div className="review-detail">
         <p><strong>Summary:</strong> {analysis.summary || ""}</p>
@@ -675,18 +729,6 @@ function ReviewRow({ review, onOpen }) {
   );
 }
 
-function PatternCard({ item }) {
-  return (
-    <article className="dashboard-item">
-      <header>
-        <strong>{item.name || "Focus area"}</strong>
-        <span className="count-pill">{Number(item.count || 1)}</span>
-      </header>
-      <p>{item.category || "review_note"}</p>
-    </article>
-  );
-}
-
 function MetricCard({ label, value }) {
   return (
     <article className="metric-card">
@@ -728,6 +770,8 @@ function readGoalEdit(goal) {
     const localEdit = JSON.parse(localStorage.getItem(goalStorageKey(goal.id)) || "{}");
     return {
       status: goal.status || "active",
+      title: goal.title || "Training goal",
+      description: goal.description || "",
       note: goal.coach_note || "",
       updatedAt: goal.updated_at || "",
       ...localEdit,
@@ -735,17 +779,21 @@ function readGoalEdit(goal) {
   } catch (_error) {
     return {
       status: goal.status || "active",
+      title: goal.title || "Training goal",
+      description: goal.description || "",
       note: goal.coach_note || "",
       updatedAt: goal.updated_at || "",
     };
   }
 }
 
+function getGoalStatus(goal) {
+  const edit = readGoalEdit(goal);
+  return edit.status || goal.status || "active";
+}
+
 function countOpenGoals(items) {
-  return items.filter((goal) => {
-    const edit = readGoalEdit(goal);
-    return (edit.status || goal.status || "active") === "active";
-  }).length;
+  return items.filter((goal) => getGoalStatus(goal) !== "completed").length;
 }
 
 function goalStorageKey(goalId) {

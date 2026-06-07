@@ -118,6 +118,8 @@ app.patch("/api/goals/:id", async (req, res) => {
   }
 
   const status = String(req.body.status || "active").toLowerCase();
+  const title = typeof req.body.title === "string" ? req.body.title.trim() : null;
+  const description = typeof req.body.description === "string" ? req.body.description.trim() : null;
   const coachNote = String(req.body.coachNote || req.body.coach_note || "").trim();
   const allowedStatuses = new Set(["active", "completed", "paused"]);
 
@@ -127,7 +129,7 @@ app.patch("/api/goals/:id", async (req, res) => {
   }
 
   try {
-    const updatedGoal = await updateDatabaseGoal(req.params.id, { status, coachNote });
+    const updatedGoal = await updateDatabaseGoal(req.params.id, { status, title, description, coachNote });
 
     if (!updatedGoal) {
       res.status(404).json({ error: "Goal not found." });
@@ -391,62 +393,21 @@ async function analyzeTranscriptWithOllama(transcript, fileName, segments) {
   const model = process.env.OLLAMA_MODEL || "llama3.1:8b";
   const knowledgeMatches = retrieveKnowledgeDocuments(cleanTranscript);
   const prompt = buildOllamaPrompt(fileName, cleanTranscript, segments, knowledgeMatches);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), ollamaTimeoutMs);
-
-  let response;
+  let generatedText;
 
   try {
-    response = await fetch(`${ollamaHost}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model,
-        prompt,
-        stream: true,
-        format: "json",
-        options: {
-          temperature: 0.1,
-        top_p: 0.8,
-          num_ctx: 4096,
-          num_predict: 1100,
-      },
-      }),
+    generatedText = await generateOllamaJson({
+      ollamaHost,
+      model,
+      prompt,
+      numPredict: 1300,
     });
   } catch (error) {
-    clearTimeout(timeout);
-
-    if (error.name === "AbortError") {
-      return buildOllamaTimeoutFallback(cleanTranscript, fileName, segments, knowledgeMatches);
-    }
-
-    throw new Error(
-      `Could not connect to Ollama at ${ollamaHost}. Make sure Ollama is running and ${model} is installed. ${error.message}`
-    );
-  }
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(
-      `Ollama analysis failed. Make sure Ollama is running and ${model} is installed. ${text}`
-    );
-  }
-
-  let generatedText = "";
-
-  try {
-    generatedText = await readOllamaStream(response);
-  } catch (error) {
-    clearTimeout(timeout);
-
     if (error.name === "AbortError") {
       return buildOllamaTimeoutFallback(cleanTranscript, fileName, segments, knowledgeMatches);
     }
 
     throw error;
-  } finally {
-    clearTimeout(timeout);
   }
 
   let parsedAnalysis;
@@ -454,6 +415,39 @@ async function analyzeTranscriptWithOllama(transcript, fileName, segments) {
   try {
     parsedAnalysis = JSON.parse(generatedText);
   } catch (error) {
+    let repairedText;
+
+    try {
+      repairedText = await repairOllamaJson({
+        ollamaHost,
+        model,
+        brokenJson: generatedText,
+        parseError: error.message,
+      });
+    } catch (repairRequestError) {
+      if (repairRequestError.name === "AbortError") {
+        return buildOllamaTimeoutFallback(cleanTranscript, fileName, segments, knowledgeMatches);
+      }
+
+      throw repairRequestError;
+    }
+
+    try {
+      parsedAnalysis = JSON.parse(repairedText);
+    } catch (repairError) {
+      return buildOllamaFallbackAnalysis(
+        cleanTranscript,
+        fileName,
+        segments,
+        knowledgeMatches,
+        "ollama_invalid_json_local_grounded",
+        `Ollama returned incomplete JSON for ${fileName}, so RankUp used transcript-grounded extraction instead.`,
+        `${error.message}; repair failed: ${repairError.message}`
+      );
+    }
+  }
+
+  if (!parsedAnalysis) {
     return buildOllamaFallbackAnalysis(
       cleanTranscript,
       fileName,
@@ -461,7 +455,7 @@ async function analyzeTranscriptWithOllama(transcript, fileName, segments) {
       knowledgeMatches,
       "ollama_invalid_json_local_grounded",
       `Ollama returned incomplete JSON for ${fileName}, so RankUp used transcript-grounded extraction instead.`,
-      error.message
+      "Ollama returned empty JSON."
     );
   }
 
@@ -485,10 +479,14 @@ async function analyzeTranscriptWithOllama(transcript, fileName, segments) {
     );
   }
 
-  return enrichOllamaAnalysisWithGroundedPlan(
-    validatedAnalysis,
-    buildGroundedTrainingPlan(cleanTranscript, fileName, segments)
-  );
+  if (isAnalysisThin(validatedAnalysis)) {
+    return enrichOllamaAnalysisWithGroundedPlan(
+      validatedAnalysis,
+      buildGroundedTrainingPlan(cleanTranscript, fileName, segments)
+    );
+  }
+
+  return validatedAnalysis;
 }
 
 function buildOllamaTimeoutFallback(transcript, fileName, segments, knowledgeMatches) {
@@ -503,6 +501,88 @@ function buildOllamaTimeoutFallback(transcript, fileName, segments, knowledgeMat
     )} seconds for ${fileName}, so RankUp used transcript-grounded extraction instead.`,
     "Ollama timed out."
   );
+}
+
+async function generateOllamaJson({ ollamaHost, model, prompt, numPredict }) {
+  return requestOllamaJson({
+    ollamaHost,
+    model,
+    prompt,
+    numPredict,
+  });
+}
+
+async function repairOllamaJson({ ollamaHost, model, brokenJson, parseError }) {
+  const prompt = `
+Convert the following malformed JSON into valid JSON only.
+Do not add commentary.
+Do not add new information.
+Preserve the existing keys and values when possible.
+If a string or array is cut off, close it cleanly.
+
+Parse error:
+${parseError}
+
+Malformed JSON:
+${brokenJson.slice(0, 12000)}
+`.trim();
+
+  return requestOllamaJson({
+    ollamaHost,
+    model,
+    prompt,
+    numPredict: 900,
+  });
+}
+
+async function requestOllamaJson({ ollamaHost, model, prompt, numPredict }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), ollamaTimeoutMs);
+  let response;
+
+  try {
+    response = await fetch(`${ollamaHost}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        prompt,
+        stream: true,
+        format: "json",
+        options: {
+          temperature: 0,
+          top_p: 0.7,
+          num_ctx: 4096,
+          num_predict: numPredict,
+        },
+      }),
+    });
+  } catch (error) {
+    clearTimeout(timeout);
+
+    if (error.name === "AbortError") {
+      throw error;
+    }
+
+    throw new Error(
+      `Could not connect to Ollama at ${ollamaHost}. Make sure Ollama is running and ${model} is installed. ${error.message}`
+    );
+  }
+
+  if (!response.ok) {
+    clearTimeout(timeout);
+    const text = await response.text();
+    throw new Error(`Ollama analysis failed. Make sure Ollama is running and ${model} is installed. ${text}`);
+  }
+
+  try {
+    return await readOllamaStream(response);
+  } catch (error) {
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function buildOllamaFallbackAnalysis(
@@ -577,6 +657,7 @@ Rules:
 - Do not introduce advice from the coaching notes unless the transcript clearly mentions that topic.
 - Do not invent events, champion details, mistakes, timestamps, or advice.
 - Every concept, mistake, and training goal must include a short exact quote from the transcript as evidence.
+- Evidence quotes must be 8-25 words. Do not paste long transcript paragraphs into evidence.
 - If the transcript does not support an item, omit it.
 - Prefer specific coach instructions over generic advice.
 - Extract the main sections of the coaching video when obvious.
@@ -596,7 +677,7 @@ Return ONLY valid JSON with this shape:
     {
       "title": "section name from transcript, e.g. Runes or Clear Paths",
       "takeaway": "short takeaway grounded in transcript",
-      "evidence": "exact transcript quote"
+      "evidence": "8-25 word exact transcript quote"
     }
   ],
   "importantConcepts": [
@@ -605,13 +686,13 @@ Return ONLY valid JSON with this shape:
       "category": "macro | positioning | objective_control | laning | vision | mechanics | review_note",
       "whyItMatters": "why this matters, tied to the quote",
       "frequency": 1,
-      "evidence": "exact transcript quote"
+      "evidence": "8-25 word exact transcript quote"
     }
   ],
   "recurringMistakes": [
     {
       "mistake": "short mistake or review issue grounded in transcript",
-      "evidence": "exact transcript quote",
+      "evidence": "8-25 word exact transcript quote",
       "fix": "specific action based only on transcript"
     }
   ],
@@ -620,14 +701,14 @@ Return ONLY valid JSON with this shape:
       "title": "short practice goal",
       "description": "specific action based only on transcript",
       "targetConcept": "matching concept label",
-      "evidence": "exact transcript quote"
+      "evidence": "8-25 word exact transcript quote"
     }
   ],
   "drills": [
     {
       "name": "short drill name",
       "steps": ["specific step 1", "specific step 2"],
-      "evidence": "exact transcript quote"
+      "evidence": "8-25 word exact transcript quote"
     }
   ],
   "keyMoments": [
@@ -970,6 +1051,15 @@ function hasStructuredAnalysis(analysis) {
     analysis.drills,
     analysis.keyMoments,
   ].some((items) => Array.isArray(items) && items.length > 0);
+}
+
+function isAnalysisThin(analysis) {
+  const concepts = normalizeArray(analysis.importantConcepts).length;
+  const goals = normalizeArray(analysis.trainingGoals).length;
+  const sections = normalizeArray(analysis.reviewSections).length;
+  const keyMoments = normalizeArray(analysis.keyMoments).length;
+
+  return concepts < 2 || goals < 2 || sections < 1 || keyMoments < 2;
 }
 
 function retrieveKnowledgeDocuments(transcript) {
@@ -1461,6 +1551,46 @@ function getCoachingThemes() {
       goal: "Use a small champion pool and only review new concepts on champions whose core patterns feel automatic.",
       mistake: "Picking champions that demand too much mechanical attention during a mentally loaded role.",
       fix: "Choose comfort picks while learning role fundamentals.",
+    },
+    {
+      name: "Auto Attack Animation Canceling",
+      category: "mechanics",
+      keywords: ["orb walk", "orb walking", "animation cancel", "cancel your animations", "auto attack move", "attack move"],
+      requiredContext: ["orb walk", "orb walking", "animation cancel", "auto attack", "attack move"],
+      takeaway: "Orb walking improves movement by canceling unnecessary auto-attack animation time after the damage is committed.",
+      goal: "Practice moving immediately after the auto attack fires without canceling the damage.",
+      mistake: "Standing still through unnecessary auto-attack animation time.",
+      fix: "Move as soon as the projectile or damage is committed.",
+    },
+    {
+      name: "Attack Speed Timing",
+      category: "mechanics",
+      keywords: ["attack speed", "faster", "cooldown", "auto cooldown", "auto pull down", "different attack speeds"],
+      requiredContext: ["attack speed", "auto attack", "cooldown", "different attack speeds"],
+      takeaway: "Higher attack speed changes the timing window for canceling autos without losing damage.",
+      goal: "Practice orb walking at multiple attack speeds until the timing feels natural.",
+      mistake: "Using the same click rhythm after attack speed changes.",
+      fix: "Adjust the movement timing whenever attack speed increases or decreases.",
+    },
+    {
+      name: "Move During Auto Cooldown",
+      category: "mechanics",
+      keywords: ["moving while waiting", "waiting for your cooldowns", "auto is not up", "stand still", "do nothing"],
+      requiredContext: ["cooldown", "auto", "stand still", "moving"],
+      takeaway: "The player should move while auto attacks are unavailable instead of wasting time standing still.",
+      goal: "After each auto, move during the cooldown, then attack again when the auto is ready.",
+      mistake: "Standing still while waiting for the next auto attack.",
+      fix: "Treat auto attacks like cooldowns and move between each one.",
+    },
+    {
+      name: "Practice Tool Repetition",
+      category: "mechanics",
+      keywords: ["practice tool", "custom game", "practice", "different items", "different levels", "100 cs"],
+      requiredContext: ["practice", "practice tool", "custom game", "different items", "different levels", "cs"],
+      takeaway: "Practice tool repetition helps the player learn changing attack speed and animation timing safely.",
+      goal: "Practice CSing and orb walking in practice tool across different levels and item timings.",
+      mistake: "Only practicing one attack-speed timing.",
+      fix: "Repeat the drill with no items, boots, and higher attack speed item states.",
     },
     {
       name: "Wave And Recall Setup",
@@ -2182,13 +2312,15 @@ async function getLatestDatabaseReview() {
   return result.rows[0] ? result.rows[0].raw_review : null;
 }
 
-async function updateDatabaseGoal(goalId, { status, coachNote }) {
+async function updateDatabaseGoal(goalId, { status, title, description, coachNote }) {
   await initializeDatabase();
   const result = await db.query(
     `
       UPDATE rankup_training_goals
       SET status = $2,
-          coach_note = $3,
+          title = CASE WHEN $3::text IS NULL OR BTRIM($3::text) = '' THEN title ELSE BTRIM($3::text) END,
+          description = COALESCE($4, description),
+          coach_note = $5,
           updated_at = NOW()
       WHERE id = $1
       RETURNING
@@ -2203,7 +2335,7 @@ async function updateDatabaseGoal(goalId, { status, coachNote }) {
         created_at,
         updated_at
     `,
-    [goalId, status, coachNote]
+    [goalId, status, title, description, coachNote]
   );
 
   return result.rows[0] || null;
