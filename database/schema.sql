@@ -14,6 +14,10 @@ CREATE TABLE IF NOT EXISTS rankup_reviews (
   ollama_model TEXT,
   word_count INTEGER,
   segment_count INTEGER NOT NULL DEFAULT 0,
+  processing_ms INTEGER,
+  audio_extraction_ms INTEGER,
+  transcription_ms INTEGER,
+  analysis_ms INTEGER,
   raw_review JSONB NOT NULL
 );
 

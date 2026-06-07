@@ -10,9 +10,10 @@ The app uploads a coached VOD, extracts audio, transcribes coach commentary loca
 - Local audio extraction with FFmpeg
 - Local transcription with faster-whisper
 - Optional local Ollama analysis for structured training plans
-- Markdown coaching knowledge base for better League-specific structure
+- Markdown coaching knowledge base for role-aware League-specific structure
 - Timestamped transcript segments and full transcript copy view
 - PostgreSQL-backed review history dashboard with local JSON fallback
+- Processing-time logging for completed reviews
 
 ## Prerequisites
 
@@ -93,6 +94,13 @@ http://localhost:3000
 9. Use `Copy Transcript` if you want to save or share the transcript.
 
 The best input is a VOD that already contains spoken coach review audio. RankUp is designed around coach commentary, not silent gameplay.
+
+Each completed review stores processing-time metadata:
+
+- audio extraction time
+- transcription time
+- analysis time
+- total processing time
 
 ## Output Sections
 

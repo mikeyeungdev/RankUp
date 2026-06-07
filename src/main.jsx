@@ -523,6 +523,9 @@ function AnalysisOutput({ analysis, error, progressStage, review }) {
     <div className="ai-output">
       <DoneBanner analysis={analysis} labelOverride={hasAnalysis ? "" : "Transcript only"} />
       <p><strong>Summary:</strong> {analysis.summary}</p>
+      {review.processing?.processingMs ? (
+        <p><strong>Processed in:</strong> {formatDuration(review.processing.processingMs)}</p>
+      ) : null}
       {analysis.metadata?.confidence ? <p><strong>Confidence:</strong> {analysis.metadata.confidence}</p> : null}
       <AnalysisList title="Review sections" items={analysis.reviewSections} getTitle={(item) => item.title} getText={(item) => item.takeaway} />
       <AnalysisList title="Focus areas" items={analysis.importantConcepts} getTitle={(item) => item.name} getText={(item) => item.whyItMatters} />
@@ -663,6 +666,9 @@ function ReviewRow({ review, onOpen }) {
       <div className="review-meta">
         <small>{formatDate(review.created_at || review.createdAt)}</small>
         <small>{review.analysis_mode || review.analysisMode || "unknown"}</small>
+        {review.processing_ms || review.processingMs ? (
+          <small>{formatDuration(review.processing_ms || review.processingMs)}</small>
+        ) : null}
       </div>
       <button className="secondary-action" type="button" onClick={onOpen}>View Review</button>
     </article>
@@ -763,6 +769,18 @@ function formatTime(seconds) {
     .toString()
     .padStart(2, "0");
   return `${minutes}:${remainder}`;
+}
+
+function formatDuration(milliseconds) {
+  const totalSeconds = Math.max(0, Math.round(Number(milliseconds || 0) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+
+  if (minutes <= 0) {
+    return `${seconds}s`;
+  }
+
+  return `${minutes}m ${seconds.toString().padStart(2, "0")}s`;
 }
 
 function getRoute() {
