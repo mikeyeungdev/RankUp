@@ -51,6 +51,8 @@ CREATE TABLE IF NOT EXISTS rankup_training_goals (
   target_concept TEXT,
   evidence TEXT,
   status TEXT NOT NULL DEFAULT 'active',
+  coach_note TEXT,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

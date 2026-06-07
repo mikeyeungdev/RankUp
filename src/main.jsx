@@ -400,15 +400,40 @@ function Dashboard() {
 }
 
 function GoalCard({ goal, onSave }) {
-  const [edit, setEdit] = useState(() => readGoalEdit(goal.id));
+  const [edit, setEdit] = useState(() => readGoalEdit(goal));
+  const [saveState, setSaveState] = useState("");
   const status = edit.status || goal.status || "active";
-  const note = edit.note || "";
+  const note = edit.note ?? goal.coach_note ?? "";
 
-  function saveGoal() {
+  async function saveGoal() {
     const updated = { ...edit, status, note, updatedAt: new Date().toISOString() };
-    localStorage.setItem(goalStorageKey(goal.id), JSON.stringify(updated));
-    setEdit(updated);
-    onSave();
+    setSaveState("Saving...");
+
+    try {
+      const response = await fetch(`/api/goals/${encodeURIComponent(goal.id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status, coachNote: note }),
+      });
+      const savedGoal = await response.json();
+
+      if (!response.ok) {
+        throw new Error(savedGoal.error || "Goal edit was not saved to PostgreSQL.");
+      }
+
+      localStorage.removeItem(goalStorageKey(goal.id));
+      setEdit({
+        status: savedGoal.status,
+        note: savedGoal.coach_note || "",
+        updatedAt: savedGoal.updated_at,
+      });
+      setSaveState("Saved to PostgreSQL");
+      onSave();
+    } catch (error) {
+      localStorage.setItem(goalStorageKey(goal.id), JSON.stringify(updated));
+      setEdit(updated);
+      setSaveState("Saved locally");
+    }
   }
 
   return (
@@ -451,7 +476,7 @@ function GoalCard({ goal, onSave }) {
             placeholder="Add a coaching note or next check-in"
           />
           <div className="goal-editor-actions">
-            <small>{edit.updatedAt ? `Saved ${formatDate(edit.updatedAt)}` : ""}</small>
+            <small>{saveState || (edit.updatedAt ? `Saved ${formatDate(edit.updatedAt)}` : "")}</small>
             <button className="secondary-action" type="button" onClick={saveGoal}>
               Save changes
             </button>
@@ -692,17 +717,27 @@ function hasStructuredReview(analysis = {}) {
   ].some((items) => Array.isArray(items) && items.length > 0);
 }
 
-function readGoalEdit(goalId) {
+function readGoalEdit(goal) {
   try {
-    return JSON.parse(localStorage.getItem(goalStorageKey(goalId)) || "{}");
+    const localEdit = JSON.parse(localStorage.getItem(goalStorageKey(goal.id)) || "{}");
+    return {
+      status: goal.status || "active",
+      note: goal.coach_note || "",
+      updatedAt: goal.updated_at || "",
+      ...localEdit,
+    };
   } catch (_error) {
-    return {};
+    return {
+      status: goal.status || "active",
+      note: goal.coach_note || "",
+      updatedAt: goal.updated_at || "",
+    };
   }
 }
 
 function countOpenGoals(items) {
   return items.filter((goal) => {
-    const edit = readGoalEdit(goal.id);
+    const edit = readGoalEdit(goal);
     return (edit.status || goal.status || "active") === "active";
   }).length;
 }

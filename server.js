@@ -111,6 +111,36 @@ app.get("/api/dashboard", async (_req, res) => {
   res.json(await getDashboardSummary());
 });
 
+app.patch("/api/goals/:id", async (req, res) => {
+  if (!db) {
+    res.status(503).json({ error: "PostgreSQL is not configured. Goal edits are available when DATABASE_URL is set." });
+    return;
+  }
+
+  const status = String(req.body.status || "active").toLowerCase();
+  const coachNote = String(req.body.coachNote || req.body.coach_note || "").trim();
+  const allowedStatuses = new Set(["active", "completed", "paused"]);
+
+  if (!allowedStatuses.has(status)) {
+    res.status(400).json({ error: "Goal status must be active, completed, or paused." });
+    return;
+  }
+
+  try {
+    const updatedGoal = await updateDatabaseGoal(req.params.id, { status, coachNote });
+
+    if (!updatedGoal) {
+      res.status(404).json({ error: "Goal not found." });
+      return;
+    }
+
+    res.json(updatedGoal);
+  } catch (error) {
+    console.error(`Goal update failed: ${error.message}`);
+    res.status(500).json({ error: "Could not save goal edit." });
+  }
+});
+
 app.post("/api/reviews", upload.single("vod"), async (req, res) => {
   if ((transcribeProvider === "openai" || analysisProvider === "openai") && !process.env.OPENAI_API_KEY) {
     res.status(400).json({
@@ -1608,6 +1638,8 @@ async function initializeDatabase() {
       target_concept TEXT,
       evidence TEXT,
       status TEXT NOT NULL DEFAULT 'active',
+      coach_note TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -1619,6 +1651,9 @@ async function initializeDatabase() {
       score INTEGER
     );
   `);
+
+  await db.query("ALTER TABLE rankup_training_goals ADD COLUMN IF NOT EXISTS coach_note TEXT");
+  await db.query("ALTER TABLE rankup_training_goals ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()");
 }
 
 async function saveReviewToDatabase(review, savedAs) {
@@ -1783,6 +1818,33 @@ async function getLatestDatabaseReview() {
   return result.rows[0] ? result.rows[0].raw_review : null;
 }
 
+async function updateDatabaseGoal(goalId, { status, coachNote }) {
+  await initializeDatabase();
+  const result = await db.query(
+    `
+      UPDATE rankup_training_goals
+      SET status = $2,
+          coach_note = $3,
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING
+        id,
+        review_id,
+        title,
+        description,
+        target_concept,
+        evidence,
+        status,
+        coach_note,
+        created_at,
+        updated_at
+    `,
+    [goalId, status, coachNote]
+  );
+
+  return result.rows[0] || null;
+}
+
 async function getDashboardSummary() {
   if (!db) {
     return getJsonDashboardSummary();
@@ -1816,7 +1878,9 @@ async function getDashboardSummary() {
           goal.description,
           goal.target_concept,
           goal.evidence,
-          goal.status
+          goal.status,
+          goal.coach_note,
+          goal.updated_at
         FROM rankup_training_goals goal
         JOIN rankup_reviews review ON review.id = goal.review_id
         ORDER BY review.created_at DESC, goal.id ASC
