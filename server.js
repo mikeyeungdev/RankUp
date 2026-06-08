@@ -111,6 +111,38 @@ app.get("/api/dashboard", async (_req, res) => {
   res.json(await getDashboardSummary());
 });
 
+app.patch("/api/goals/:id", async (req, res) => {
+  if (!db) {
+    res.status(503).json({ error: "PostgreSQL is not configured. Goal edits are available when DATABASE_URL is set." });
+    return;
+  }
+
+  const status = String(req.body.status || "active").toLowerCase();
+  const title = typeof req.body.title === "string" ? req.body.title.trim() : null;
+  const description = typeof req.body.description === "string" ? req.body.description.trim() : null;
+  const coachNote = String(req.body.coachNote || req.body.coach_note || "").trim();
+  const allowedStatuses = new Set(["active", "completed", "paused"]);
+
+  if (!allowedStatuses.has(status)) {
+    res.status(400).json({ error: "Goal status must be active, completed, or paused." });
+    return;
+  }
+
+  try {
+    const updatedGoal = await updateDatabaseGoal(req.params.id, { status, title, description, coachNote });
+
+    if (!updatedGoal) {
+      res.status(404).json({ error: "Goal not found." });
+      return;
+    }
+
+    res.json(updatedGoal);
+  } catch (error) {
+    console.error(`Goal update failed: ${error.message}`);
+    res.status(500).json({ error: "Could not save goal edit." });
+  }
+});
+
 app.post("/api/reviews", upload.single("vod"), async (req, res) => {
   if ((transcribeProvider === "openai" || analysisProvider === "openai") && !process.env.OPENAI_API_KEY) {
     res.status(400).json({
@@ -127,13 +159,24 @@ app.post("/api/reviews", upload.single("vod"), async (req, res) => {
 
   const uploadedPath = req.file.path;
   const audioPath = path.join(audioDir, `${req.file.filename}.mp3`);
+  const timing = createProcessingTimer();
 
   try {
+    const extractDone = timing.startStage("audioExtractionMs");
     await extractAudio(uploadedPath, audioPath);
+    extractDone();
+
+    const transcribeDone = timing.startStage("transcriptionMs");
     const transcription = await transcribeAudio(audioPath);
+    transcribeDone();
+
     const transcriptText = normalizeTranscript(transcription);
     const segments = normalizeSegments(transcription, transcriptText);
+
+    const analysisDone = timing.startStage("analysisMs");
     const analysis = await analyzeTranscript(transcriptText, req.file.originalname, segments);
+    analysisDone();
+
     const review = {
       id: createReviewId(),
       createdAt: new Date().toISOString(),
@@ -148,6 +191,7 @@ app.post("/api/reviews", upload.single("vod"), async (req, res) => {
       transcript: transcriptText,
       segments,
       analysis,
+      processing: timing.finish(),
     };
 
     await saveReview(review);
@@ -165,6 +209,7 @@ app.post("/api/reviews", upload.single("vod"), async (req, res) => {
         localWhisperModel: process.env.LOCAL_WHISPER_MODEL || "base",
         ollamaModel: process.env.OLLAMA_MODEL || "llama3.1:8b",
       },
+      processing: timing.finish(),
       error: error.message || "Failed to process the coached VOD.",
     });
     res.status(500).json({
@@ -317,7 +362,7 @@ async function analyzeTranscript(transcript, fileName, segments = []) {
       {
         role: "system",
         content:
-          "You are RankUp, a League of Legends VOD review assistant. Organize coach commentary into practical improvement plans. Focus on concepts like wave management, jungle tracking, vision, objective tempo, recall timing, teamfight positioning, and champion-specific execution.",
+          "You are RankUp, a League of Legends VOD review assistant. Organize coach commentary into practical improvement plans. Use the transcript to choose the relevant role, topic, and coaching concepts instead of forcing preset categories.",
       },
       {
         role: "user",
@@ -348,62 +393,21 @@ async function analyzeTranscriptWithOllama(transcript, fileName, segments) {
   const model = process.env.OLLAMA_MODEL || "llama3.1:8b";
   const knowledgeMatches = retrieveKnowledgeDocuments(cleanTranscript);
   const prompt = buildOllamaPrompt(fileName, cleanTranscript, segments, knowledgeMatches);
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), ollamaTimeoutMs);
-
-  let response;
+  let generatedText;
 
   try {
-    response = await fetch(`${ollamaHost}/api/generate`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify({
-        model,
-        prompt,
-        stream: true,
-        format: "json",
-        options: {
-          temperature: 0.1,
-        top_p: 0.8,
-          num_ctx: 4096,
-          num_predict: 1100,
-      },
-      }),
+    generatedText = await generateOllamaJson({
+      ollamaHost,
+      model,
+      prompt,
+      numPredict: 1300,
     });
   } catch (error) {
-    clearTimeout(timeout);
-
-    if (error.name === "AbortError") {
-      return buildOllamaTimeoutFallback(cleanTranscript, fileName, segments, knowledgeMatches);
-    }
-
-    throw new Error(
-      `Could not connect to Ollama at ${ollamaHost}. Make sure Ollama is running and ${model} is installed. ${error.message}`
-    );
-  }
-
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(
-      `Ollama analysis failed. Make sure Ollama is running and ${model} is installed. ${text}`
-    );
-  }
-
-  let generatedText = "";
-
-  try {
-    generatedText = await readOllamaStream(response);
-  } catch (error) {
-    clearTimeout(timeout);
-
     if (error.name === "AbortError") {
       return buildOllamaTimeoutFallback(cleanTranscript, fileName, segments, knowledgeMatches);
     }
 
     throw error;
-  } finally {
-    clearTimeout(timeout);
   }
 
   let parsedAnalysis;
@@ -411,6 +415,39 @@ async function analyzeTranscriptWithOllama(transcript, fileName, segments) {
   try {
     parsedAnalysis = JSON.parse(generatedText);
   } catch (error) {
+    let repairedText;
+
+    try {
+      repairedText = await repairOllamaJson({
+        ollamaHost,
+        model,
+        brokenJson: generatedText,
+        parseError: error.message,
+      });
+    } catch (repairRequestError) {
+      if (repairRequestError.name === "AbortError") {
+        return buildOllamaTimeoutFallback(cleanTranscript, fileName, segments, knowledgeMatches);
+      }
+
+      throw repairRequestError;
+    }
+
+    try {
+      parsedAnalysis = JSON.parse(repairedText);
+    } catch (repairError) {
+      return buildOllamaFallbackAnalysis(
+        cleanTranscript,
+        fileName,
+        segments,
+        knowledgeMatches,
+        "ollama_invalid_json_local_grounded",
+        `Ollama returned incomplete JSON for ${fileName}, so RankUp used transcript-grounded extraction instead.`,
+        `${error.message}; repair failed: ${repairError.message}`
+      );
+    }
+  }
+
+  if (!parsedAnalysis) {
     return buildOllamaFallbackAnalysis(
       cleanTranscript,
       fileName,
@@ -418,7 +455,7 @@ async function analyzeTranscriptWithOllama(transcript, fileName, segments) {
       knowledgeMatches,
       "ollama_invalid_json_local_grounded",
       `Ollama returned incomplete JSON for ${fileName}, so RankUp used transcript-grounded extraction instead.`,
-      error.message
+      "Ollama returned empty JSON."
     );
   }
 
@@ -428,8 +465,9 @@ async function analyzeTranscriptWithOllama(transcript, fileName, segments) {
     cleanTranscript,
     knowledgeMatches
   );
+  const validatedAnalysis = validateAnalysisEvidence(normalizedAnalysis, cleanTranscript);
 
-  if (!hasStructuredAnalysis(normalizedAnalysis)) {
+  if (!hasStructuredAnalysis(validatedAnalysis)) {
     return buildOllamaFallbackAnalysis(
       cleanTranscript,
       fileName,
@@ -441,10 +479,14 @@ async function analyzeTranscriptWithOllama(transcript, fileName, segments) {
     );
   }
 
-  return enrichOllamaAnalysisWithGroundedPlan(
-    normalizedAnalysis,
-    buildGroundedTrainingPlan(cleanTranscript, fileName, segments)
-  );
+  if (isAnalysisThin(validatedAnalysis)) {
+    return enrichOllamaAnalysisWithGroundedPlan(
+      validatedAnalysis,
+      buildGroundedTrainingPlan(cleanTranscript, fileName, segments)
+    );
+  }
+
+  return validatedAnalysis;
 }
 
 function buildOllamaTimeoutFallback(transcript, fileName, segments, knowledgeMatches) {
@@ -459,6 +501,88 @@ function buildOllamaTimeoutFallback(transcript, fileName, segments, knowledgeMat
     )} seconds for ${fileName}, so RankUp used transcript-grounded extraction instead.`,
     "Ollama timed out."
   );
+}
+
+async function generateOllamaJson({ ollamaHost, model, prompt, numPredict }) {
+  return requestOllamaJson({
+    ollamaHost,
+    model,
+    prompt,
+    numPredict,
+  });
+}
+
+async function repairOllamaJson({ ollamaHost, model, brokenJson, parseError }) {
+  const prompt = `
+Convert the following malformed JSON into valid JSON only.
+Do not add commentary.
+Do not add new information.
+Preserve the existing keys and values when possible.
+If a string or array is cut off, close it cleanly.
+
+Parse error:
+${parseError}
+
+Malformed JSON:
+${brokenJson.slice(0, 12000)}
+`.trim();
+
+  return requestOllamaJson({
+    ollamaHost,
+    model,
+    prompt,
+    numPredict: 900,
+  });
+}
+
+async function requestOllamaJson({ ollamaHost, model, prompt, numPredict }) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), ollamaTimeoutMs);
+  let response;
+
+  try {
+    response = await fetch(`${ollamaHost}/api/generate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      signal: controller.signal,
+      body: JSON.stringify({
+        model,
+        prompt,
+        stream: true,
+        format: "json",
+        options: {
+          temperature: 0,
+          top_p: 0.7,
+          num_ctx: 4096,
+          num_predict: numPredict,
+        },
+      }),
+    });
+  } catch (error) {
+    clearTimeout(timeout);
+
+    if (error.name === "AbortError") {
+      throw error;
+    }
+
+    throw new Error(
+      `Could not connect to Ollama at ${ollamaHost}. Make sure Ollama is running and ${model} is installed. ${error.message}`
+    );
+  }
+
+  if (!response.ok) {
+    clearTimeout(timeout);
+    const text = await response.text();
+    throw new Error(`Ollama analysis failed. Make sure Ollama is running and ${model} is installed. ${text}`);
+  }
+
+  try {
+    return await readOllamaStream(response);
+  } catch (error) {
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function buildOllamaFallbackAnalysis(
@@ -519,6 +643,7 @@ function buildOllamaPrompt(fileName, transcript, segments, knowledgeMatches = []
     .join("\n");
   const knowledgeContext = formatKnowledgeContext(knowledgeMatches);
   const clippedTranscript = clipText(transcript, ollamaTranscriptMaxChars);
+  const contextSummary = formatTranscriptContext(inferTranscriptContext(transcript));
 
   return `
 You are RankUp, a League of Legends coaching assistant.
@@ -532,17 +657,18 @@ Rules:
 - Do not introduce advice from the coaching notes unless the transcript clearly mentions that topic.
 - Do not invent events, champion details, mistakes, timestamps, or advice.
 - Every concept, mistake, and training goal must include a short exact quote from the transcript as evidence.
+- Evidence quotes must be 8-25 words. Do not paste long transcript paragraphs into evidence.
 - If the transcript does not support an item, omit it.
 - Prefer specific coach instructions over generic advice.
 - Extract the main sections of the coaching video when obvious.
-- For transcripts over 200 words, do not leave importantConcepts, trainingGoals, or keyMoments empty.
-- Always produce 4-6 importantConcepts and 4-6 concrete trainingGoals if the transcript has enough content.
-- Always include 4-8 keyMoments using timestamps from the timestamped segments when possible.
+- For transcripts over 200 words, produce only the concepts and goals that are strongly supported by transcript quotes.
+- Prefer 2-5 importantConcepts and 2-5 concrete trainingGoals over filling weak categories.
+- Include 3-8 keyMoments using timestamps from the timestamped segments when possible.
 - Include 2-5 drills when mechanics, clears, warding, or decision routines are discussed.
 - Use timestamps from the timestamped segments when possible.
 - Keep the output useful for a student and coach to share after review.
-- For jungle transcripts, actively look for supported themes such as champion identity, champion comfort, lane plan, gank setup, CC, winning lanes, jungle matchup, invades, objective priority, and enemy counterplay.
-- If the transcript directly discusses objective priority or ganking lanes with CC/winning states, include those themes.
+- Only use role-specific labels such as jungle pathing, gank setup, champion identity, or enemy threat tracking when the transcript explicitly discusses that role or concept.
+- If the transcript discusses a different role or topic, preserve that topic instead of forcing jungle categories.
 
 Return ONLY valid JSON with this shape:
 {
@@ -551,7 +677,7 @@ Return ONLY valid JSON with this shape:
     {
       "title": "section name from transcript, e.g. Runes or Clear Paths",
       "takeaway": "short takeaway grounded in transcript",
-      "evidence": "exact transcript quote"
+      "evidence": "8-25 word exact transcript quote"
     }
   ],
   "importantConcepts": [
@@ -560,13 +686,13 @@ Return ONLY valid JSON with this shape:
       "category": "macro | positioning | objective_control | laning | vision | mechanics | review_note",
       "whyItMatters": "why this matters, tied to the quote",
       "frequency": 1,
-      "evidence": "exact transcript quote"
+      "evidence": "8-25 word exact transcript quote"
     }
   ],
   "recurringMistakes": [
     {
       "mistake": "short mistake or review issue grounded in transcript",
-      "evidence": "exact transcript quote",
+      "evidence": "8-25 word exact transcript quote",
       "fix": "specific action based only on transcript"
     }
   ],
@@ -575,14 +701,14 @@ Return ONLY valid JSON with this shape:
       "title": "short practice goal",
       "description": "specific action based only on transcript",
       "targetConcept": "matching concept label",
-      "evidence": "exact transcript quote"
+      "evidence": "8-25 word exact transcript quote"
     }
   ],
   "drills": [
     {
       "name": "short drill name",
       "steps": ["specific step 1", "specific step 2"],
-      "evidence": "exact transcript quote"
+      "evidence": "8-25 word exact transcript quote"
     }
   ],
   "keyMoments": [
@@ -596,6 +722,9 @@ Return ONLY valid JSON with this shape:
 }
 
 File: ${fileName}
+
+Detected transcript context:
+${contextSummary}
 
 Relevant coaching notes:
 ${knowledgeContext || "No relevant coaching notes found."}
@@ -693,6 +822,147 @@ function enrichOllamaAnalysisWithGroundedPlan(analysis, groundedPlan) {
   return enriched;
 }
 
+function validateAnalysisEvidence(analysis, transcript) {
+  const context = inferTranscriptContext(transcript);
+  const transcriptKey = normalizeTranscriptEvidenceKey(transcript);
+  const stats = {
+    removedReviewSections: 0,
+    removedImportantConcepts: 0,
+    removedRecurringMistakes: 0,
+    removedTrainingGoals: 0,
+    removedDrills: 0,
+    removedKeyMoments: 0,
+  };
+
+  const reviewSections = filterEvidenceItems(
+    analysis.reviewSections,
+    transcript,
+    transcriptKey,
+    context,
+    (item) => `${item.title} ${item.takeaway}`,
+    "removedReviewSections",
+    stats
+  );
+  const importantConcepts = filterEvidenceItems(
+    analysis.importantConcepts,
+    transcript,
+    transcriptKey,
+    context,
+    (item) => `${item.name} ${item.category} ${item.whyItMatters}`,
+    "removedImportantConcepts",
+    stats
+  );
+  const recurringMistakes = filterEvidenceItems(
+    analysis.recurringMistakes,
+    transcript,
+    transcriptKey,
+    context,
+    (item) => `${item.mistake} ${item.fix}`,
+    "removedRecurringMistakes",
+    stats
+  );
+  const trainingGoals = filterEvidenceItems(
+    analysis.trainingGoals,
+    transcript,
+    transcriptKey,
+    context,
+    (item) => `${item.title} ${item.description} ${item.targetConcept}`,
+    "removedTrainingGoals",
+    stats
+  );
+  const drills = filterEvidenceItems(
+    analysis.drills,
+    transcript,
+    transcriptKey,
+    context,
+    (item) => `${item.name} ${normalizeArray(item.steps).join(" ")}`,
+    "removedDrills",
+    stats
+  );
+  const keyMoments = normalizeArray(analysis.keyMoments).filter((item) => {
+    const keep = hasTranscriptEvidence(item.text, transcript, transcriptKey);
+    if (!keep) {
+      stats.removedKeyMoments += 1;
+    }
+    return keep;
+  });
+
+  return {
+    ...analysis,
+    reviewSections,
+    importantConcepts,
+    recurringMistakes,
+    trainingGoals,
+    drills,
+    keyMoments,
+    metadata: {
+      ...analysis.metadata,
+      evidenceValidation: {
+        enabled: true,
+        ...stats,
+      },
+    },
+  };
+}
+
+function filterEvidenceItems(items, transcript, transcriptKey, context, labelFn, statsKey, stats) {
+  return normalizeArray(items).filter((item) => {
+    const label = safeString(labelFn(item), "");
+    const keep =
+      hasTranscriptEvidence(item.evidence, transcript, transcriptKey) &&
+      labelMatchesTranscriptContext(label, context);
+
+    if (!keep) {
+      stats[statsKey] += 1;
+    }
+
+    return keep;
+  });
+}
+
+function hasTranscriptEvidence(evidence, transcript, transcriptKey) {
+  const evidenceKey = normalizeEvidenceKey(evidence);
+
+  if (!evidenceKey || evidenceKey.length < 8) {
+    return false;
+  }
+
+  if (transcriptKey.includes(evidenceKey)) {
+    return true;
+  }
+
+  const evidenceTokens = evidenceKey.split(" ").filter((token) => token.length > 2);
+
+  if (evidenceTokens.length < 3) {
+    return false;
+  }
+
+  const transcriptTokens = new Set(transcriptKey.split(" "));
+  const overlap = evidenceTokens.filter((token) => transcriptTokens.has(token)).length;
+  return overlap / evidenceTokens.length >= 0.8;
+}
+
+function normalizeTranscriptEvidenceKey(value) {
+  return String(value).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function labelMatchesTranscriptContext(label, context) {
+  const clean = label.toLowerCase();
+  const rules = [
+    { phrases: ["jungle", "jungler", "gank", "camp", "invade", "clear"], contexts: ["jungle"] },
+    { phrases: ["top lane", "teleport", "split push", "side lane"], contexts: ["top", "laning"] },
+    { phrases: ["mid lane", "roam", "river priority"], contexts: ["mid"] },
+    { phrases: ["adc", "marksman", "damage uptime", "front to back"], contexts: ["adc", "teamfight"] },
+    { phrases: ["support", "roam timer", "enchanter"], contexts: ["support"] },
+    { phrases: ["bot lane", "2v2", "level 2"], contexts: ["bot_2v2", "adc", "support"] },
+  ];
+
+  return rules.every((rule) => {
+    const mentionsRule = rule.phrases.some((phrase) => clean.includes(phrase));
+    return !mentionsRule || rule.contexts.some((key) => context[key]);
+  });
+}
+
 function mergeAnalysisItems(primary = [], secondary = [], labelKey, limit) {
   const seen = new Set();
   const merged = [];
@@ -730,15 +1000,20 @@ function canonicalAnalysisLabel(label) {
     return "objective-priority";
   }
 
-  if (clean.includes("enemy") || clean.includes("threat") || clean.includes("counter")) {
+  if (
+    clean.includes("enemy jungler") ||
+    clean.includes("enemy jungle") ||
+    clean.includes("countergank") ||
+    clean.includes("threat tracking")
+  ) {
     return "enemy-threat-tracking";
   }
 
-  if (clean.includes("playstyle") || clean.includes("identity") || clean.includes("jungler type")) {
+  if (clean.includes("jungler type") || clean.includes("jungle playstyle")) {
     return "jungle-playstyle-identity";
   }
 
-  if (clean.includes("mental") || clean.includes("map") || clean.includes("awareness")) {
+  if (clean.includes("jungle mental") || clean.includes("clearing awareness")) {
     return "jungle-mental-stack";
   }
 
@@ -778,8 +1053,18 @@ function hasStructuredAnalysis(analysis) {
   ].some((items) => Array.isArray(items) && items.length > 0);
 }
 
+function isAnalysisThin(analysis) {
+  const concepts = normalizeArray(analysis.importantConcepts).length;
+  const goals = normalizeArray(analysis.trainingGoals).length;
+  const sections = normalizeArray(analysis.reviewSections).length;
+  const keyMoments = normalizeArray(analysis.keyMoments).length;
+
+  return concepts < 2 || goals < 2 || sections < 1 || keyMoments < 2;
+}
+
 function retrieveKnowledgeDocuments(transcript) {
   const transcriptTokens = tokenizeForKnowledge(transcript);
+  const context = inferTranscriptContext(transcript);
 
   if (!transcriptTokens.length) {
     return [];
@@ -788,9 +1073,9 @@ function retrieveKnowledgeDocuments(transcript) {
   return listKnowledgeDocuments()
     .map((document) => ({
       ...document,
-      score: scoreKnowledgeDocument(transcript, transcriptTokens, document),
+      score: scoreKnowledgeDocument(transcript, transcriptTokens, document, context),
     }))
-    .filter((document) => document.score > 0)
+    .filter((document) => document.score >= 4)
     .sort((a, b) => b.score - a.score)
     .slice(0, knowledgeTopK);
 }
@@ -833,11 +1118,15 @@ function listKnowledgeDocuments() {
     });
 }
 
-function scoreKnowledgeDocument(transcript, transcriptTokens, document) {
+function scoreKnowledgeDocument(transcript, transcriptTokens, document, context) {
   const documentTokens = new Set(tokenizeForKnowledge(`${document.title} ${document.content}`));
   const transcriptLower = transcript.toLowerCase();
   const documentKey = `${document.file} ${document.title}`.toLowerCase();
   let score = 0;
+
+  if (!documentMatchesTranscriptContext(documentKey, context)) {
+    return 0;
+  }
 
   transcriptTokens.forEach((token) => {
     if (documentTokens.has(token)) {
@@ -845,13 +1134,63 @@ function scoreKnowledgeDocument(transcript, transcriptTokens, document) {
     }
   });
 
-  score += scoreKnowledgeBoosts(transcriptLower, documentKey);
+  score += scoreKnowledgeBoosts(transcriptLower, documentKey, context);
 
   return score;
 }
 
-function scoreKnowledgeBoosts(transcript, documentKey) {
+function documentMatchesTranscriptContext(documentKey, context) {
+  const requirements = [
+    { keys: ["top-lane-side-lane-matchups"], contexts: ["top", "laning"] },
+    { keys: ["mid-lane-roaming-priority"], contexts: ["mid"] },
+    { keys: ["adc-positioning-damage-uptime"], contexts: ["adc", "teamfight"] },
+    { keys: ["support-vision-roaming-lane-control"], contexts: ["support", "vision"] },
+    { keys: ["bot-lane-2v2-trading"], contexts: ["bot_2v2", "adc", "support", "laning"] },
+    { keys: ["jungle-pathing-tracking"], contexts: ["jungle"] },
+    { keys: ["objective-control"], contexts: ["objective"] },
+    { keys: ["wave-management-laning", "trading-cooldowns-lane-combat"], contexts: ["laning"] },
+    { keys: ["positioning-teamfighting"], contexts: ["teamfight"] },
+    { keys: ["vision-map-awareness"], contexts: ["vision", "objective", "jungle"] },
+    { keys: ["recalls-resets-item-timings"], contexts: ["recall", "laning", "objective"] },
+    { keys: ["mechanics-execution-practice"], contexts: ["mechanics"] },
+  ];
+
+  const rule = requirements.find((item) => item.keys.some((key) => documentKey.includes(key)));
+
+  if (!rule) {
+    return true;
+  }
+
+  return rule.contexts.some((key) => context[key]);
+}
+
+function scoreKnowledgeBoosts(transcript, documentKey, context) {
   const boosts = [
+    {
+      phrases: ["top lane", "top laner", "teleport", "side lane", "split push", "splitpushing"],
+      documents: ["top-lane-side-lane-matchups", "role-specific-responsibilities"],
+      value: 24,
+    },
+    {
+      phrases: ["mid lane", "mid laner", "roam", "roaming", "river control", "mid priority"],
+      documents: ["mid-lane-roaming-priority", "role-specific-responsibilities"],
+      value: 24,
+    },
+    {
+      phrases: ["adc", "marksman", "bot carry", "damage uptime", "front to back", "front-to-back", "kite", "kiting"],
+      documents: ["adc-positioning-damage-uptime", "positioning-teamfighting", "role-specific-responsibilities"],
+      value: 24,
+    },
+    {
+      phrases: ["support", "roam timer", "roam timing", "sweeper", "engage support", "enchanter", "peel"],
+      documents: ["support-vision-roaming-lane-control", "vision-map-awareness", "role-specific-responsibilities"],
+      value: 24,
+    },
+    {
+      phrases: ["bot lane", "2v2", "level 2", "level two", "all in", "all-in", "poke lane", "sustain lane"],
+      documents: ["bot-lane-2v2-trading", "trading-cooldowns-lane-combat", "wave-management-laning"],
+      value: 22,
+    },
     {
       phrases: ["jungle", "jungler", "junglers", "gank", "ganking", "invade", "camp", "camps"],
       documents: ["jungle-pathing-tracking", "role-specific-responsibilities"],
@@ -861,6 +1200,7 @@ function scoreKnowledgeBoosts(transcript, documentKey) {
       phrases: ["supportive junglers", "carry junglers", "tank junglers", "playstyle", "win condition"],
       documents: ["champion-identity-win-conditions", "role-specific-responsibilities"],
       value: 26,
+      requiresAnyContext: ["jungle", "teamfight", "champion_identity"],
     },
     {
       phrases: ["champion select", "comfortable champion", "mechanics", "jungle champion"],
@@ -879,7 +1219,7 @@ function scoreKnowledgeBoosts(transcript, documentKey) {
     },
     {
       phrases: ["winning lane", "cc", "crowd control", "lane matchups", "hp advantage"],
-      documents: ["jungle-pathing-tracking", "wave-management-laning", "trading-cooldowns-lane-combat"],
+      documents: ["wave-management-laning", "trading-cooldowns-lane-combat"],
       value: 18,
     },
   ];
@@ -887,8 +1227,43 @@ function scoreKnowledgeBoosts(transcript, documentKey) {
   return boosts.reduce((total, boost) => {
     const hasPhrase = boost.phrases.some((phrase) => transcript.includes(phrase));
     const hasDocument = boost.documents.some((document) => documentKey.includes(document));
-    return hasPhrase && hasDocument ? total + boost.value : total;
+    const hasContext =
+      !boost.requiresAnyContext || boost.requiresAnyContext.some((key) => context[key]);
+    return hasPhrase && hasDocument && hasContext ? total + boost.value : total;
   }, 0);
+}
+
+function inferTranscriptContext(transcript) {
+  const lower = transcript.toLowerCase();
+  const hasAny = (phrases) => phrases.some((phrase) => lower.includes(phrase));
+
+  return {
+    top: hasAny(["top lane", "top laner", "teleport", "side lane", "split push", "splitpushing", "bruiser"]),
+    mid: hasAny(["mid lane", "mid laner", "roam", "roaming", "river", "mage", "assassin"]),
+    adc: hasAny(["adc", "marksman", "bot carry", "damage uptime", "front to back", "front-to-back", "kite", "kiting"]),
+    support: hasAny(["support", "roam timer", "roam timing", "sweeper", "engage support", "enchanter", "peel"]),
+    bot_2v2: hasAny(["bot lane", "2v2", "level 2", "level two", "all in", "all-in", "poke lane", "sustain lane"]),
+    jungle: hasAny(["jungle", "jungler", "gank", "ganking", "invade", "camp", "camps", "clear path", "full clear"]),
+    laning: hasAny(["wave", "freeze", "slow push", "crash", "cs", "trade", "trading", "lane", "minion"]),
+    teamfight: hasAny(["teamfight", "fight", "frontline", "backline", "peel", "engage", "flank", "positioning"]),
+    vision: hasAny(["ward", "wards", "vision", "sweeper", "control ward", "fog", "face check", "facecheck"]),
+    objective: hasAny(["objective", "dragon", "baron", "herald", "grubs", "tower", "turret", "elder"]),
+    recall: hasAny(["recall", "reset", "base", "buy", "item spike", "spend gold", "shopping"]),
+    mechanics: hasAny(["mechanic", "mechanics", "combo", "ability", "cooldown", "skillshot", "execution"]),
+    champion_identity: hasAny(["champion identity", "win condition", "scaling", "carry", "tank", "frontline", "split push"]),
+  };
+}
+
+function formatTranscriptContext(context) {
+  const active = Object.entries(context)
+    .filter(([, value]) => value)
+    .map(([key]) => key.replaceAll("_", " "));
+
+  if (!active.length) {
+    return "No strong role/topic context detected. Use only direct transcript wording for labels.";
+  }
+
+  return active.join(", ");
 }
 
 function tokenizeForKnowledge(text) {
@@ -1161,6 +1536,7 @@ function getCoachingThemes() {
       name: "Jungle Playstyle Identity",
       category: "macro",
       keywords: ["supportive", "carry", "tank", "frontline", "bruiser", "playstyle"],
+      requiredContext: ["jungle", "jungler", "junglers", "gank", "ganking", "camp", "camps", "clear", "clearing"],
       takeaway: "The player should choose a jungle style that matches how they want to impact the game.",
       goal: "Before queueing, write whether this game plan is carry, supportive, or frontline, then pick a champion that fits that job.",
       mistake: "Playing jungle without a clear role identity.",
@@ -1169,16 +1545,108 @@ function getCoachingThemes() {
     {
       name: "Champion Comfort In Select",
       category: "mechanics",
-      keywords: ["champion select", "comfortable", "mechanics", "mechanically", "pick a jungle champion"],
-      takeaway: "A comfortable champion lowers mechanical load so the jungler can spend attention on the map.",
-      goal: "Use a small jungle pool and only review new concepts on champions whose clear and combos feel automatic.",
+      keywords: ["champion select", "comfortable", "mechanics", "mechanically", "pick a champion"],
+      requiredContext: ["champion select", "pick", "champion", "mechanics", "mechanically"],
+      takeaway: "A comfortable champion lowers mechanical load so the player can spend attention on the map and decisions.",
+      goal: "Use a small champion pool and only review new concepts on champions whose core patterns feel automatic.",
       mistake: "Picking champions that demand too much mechanical attention during a mentally loaded role.",
-      fix: "Choose comfort picks while learning jungle fundamentals.",
+      fix: "Choose comfort picks while learning role fundamentals.",
+    },
+    {
+      name: "Auto Attack Animation Canceling",
+      category: "mechanics",
+      keywords: ["orb walk", "orb walking", "animation cancel", "cancel your animations", "auto attack move", "attack move"],
+      requiredContext: ["orb walk", "orb walking", "animation cancel", "auto attack", "attack move"],
+      takeaway: "Orb walking improves movement by canceling unnecessary auto-attack animation time after the damage is committed.",
+      goal: "Practice moving immediately after the auto attack fires without canceling the damage.",
+      mistake: "Standing still through unnecessary auto-attack animation time.",
+      fix: "Move as soon as the projectile or damage is committed.",
+    },
+    {
+      name: "Attack Speed Timing",
+      category: "mechanics",
+      keywords: ["attack speed", "faster", "cooldown", "auto cooldown", "auto pull down", "different attack speeds"],
+      requiredContext: ["attack speed", "auto attack", "cooldown", "different attack speeds"],
+      takeaway: "Higher attack speed changes the timing window for canceling autos without losing damage.",
+      goal: "Practice orb walking at multiple attack speeds until the timing feels natural.",
+      mistake: "Using the same click rhythm after attack speed changes.",
+      fix: "Adjust the movement timing whenever attack speed increases or decreases.",
+    },
+    {
+      name: "Move During Auto Cooldown",
+      category: "mechanics",
+      keywords: ["moving while waiting", "waiting for your cooldowns", "auto is not up", "stand still", "do nothing"],
+      requiredContext: ["cooldown", "auto", "stand still", "moving"],
+      takeaway: "The player should move while auto attacks are unavailable instead of wasting time standing still.",
+      goal: "After each auto, move during the cooldown, then attack again when the auto is ready.",
+      mistake: "Standing still while waiting for the next auto attack.",
+      fix: "Treat auto attacks like cooldowns and move between each one.",
+    },
+    {
+      name: "Practice Tool Repetition",
+      category: "mechanics",
+      keywords: ["practice tool", "custom game", "practice", "different items", "different levels", "100 cs"],
+      requiredContext: ["practice", "practice tool", "custom game", "different items", "different levels", "cs"],
+      takeaway: "Practice tool repetition helps the player learn changing attack speed and animation timing safely.",
+      goal: "Practice CSing and orb walking in practice tool across different levels and item timings.",
+      mistake: "Only practicing one attack-speed timing.",
+      fix: "Repeat the drill with no items, boots, and higher attack speed item states.",
+    },
+    {
+      name: "Wave And Recall Setup",
+      category: "laning",
+      keywords: ["wave", "freeze", "slow push", "crash", "recall", "reset", "cs", "minion"],
+      requiredContext: ["wave", "freeze", "slow push", "crash", "recall", "reset", "cs", "minion"],
+      takeaway: "Lane decisions should create clean recall, roam, trade, or objective windows.",
+      goal: "Before recalling or roaming, name the wave state and what it lets you do next.",
+      mistake: "Moving or resetting without first fixing the wave state.",
+      fix: "Review the wave before leaving lane and decide whether to crash, hold, freeze, or reset.",
+    },
+    {
+      name: "Trading Around Cooldowns",
+      category: "laning",
+      keywords: ["trade", "trading", "cooldown", "ability", "level advantage", "minion wave", "poke"],
+      requiredContext: ["trade", "trading", "cooldown", "ability", "level advantage", "minion"],
+      takeaway: "Good trades happen when cooldowns, wave size, and level advantage support the fight.",
+      goal: "Before each trade, check the enemy key cooldown and the size of the wave.",
+      mistake: "Trading without cooldown or wave advantage.",
+      fix: "Only trade when the transcript-supported setup condition is present.",
+    },
+    {
+      name: "Teamfight Positioning",
+      category: "positioning",
+      keywords: ["teamfight", "fight", "position", "positioning", "frontline", "backline", "peel", "engage", "flank"],
+      requiredContext: ["teamfight", "fight", "position", "positioning", "frontline", "backline", "peel", "engage", "flank"],
+      takeaway: "Fight impact depends on standing where the champion can do their job without giving away a free engage.",
+      goal: "Before the next fight, state your job and the enemy threat you must respect.",
+      mistake: "Entering fights without a clear job or threat check.",
+      fix: "Pause before fights to identify engage tools, target access, and safe spacing.",
+    },
+    {
+      name: "Vision And Fog Safety",
+      category: "vision",
+      keywords: ["ward", "wards", "vision", "sweeper", "control ward", "fog", "face check", "facecheck"],
+      requiredContext: ["ward", "wards", "vision", "sweeper", "control ward", "fog", "face check", "facecheck"],
+      takeaway: "Vision should support the next play and prevent walking into unknown threat.",
+      goal: "Before entering fog, identify which enemies are missing and what vision covers the path.",
+      mistake: "Moving through fog without information.",
+      fix: "Use wards, sweepers, and visible enemy positions before crossing unsafe areas.",
+    },
+    {
+      name: "Champion Job And Win Condition",
+      category: "macro",
+      keywords: ["win condition", "champion identity", "scaling", "split push", "frontline", "carry", "peel"],
+      requiredContext: ["win condition", "champion identity", "scaling", "split push", "frontline", "carry", "peel"],
+      takeaway: "The player should connect decisions to what their champion or team composition is trying to accomplish.",
+      goal: "Before fights and rotations, state whether your job is damage, engage, peel, side lane, or scaling.",
+      mistake: "Making plays that do not match the champion or team win condition.",
+      fix: "Review each major decision against the champion's intended job.",
     },
     {
       name: "Pre-Game Lane Plan",
       category: "macro",
       keywords: ["game plan", "decide", "which lanes", "play through", "forecast", "lane needs help", "snowball"],
+      requiredContext: ["jungle", "jungler", "gank", "ganking", "camp", "clear", "path", "pathing"],
       takeaway: "The jungler should enter the game with a lane plan instead of reacting randomly.",
       goal: "During loading screen, choose the first lane to watch and the first lane that can become a win condition.",
       mistake: "Starting the game without deciding which lane to play through.",
@@ -1188,6 +1656,7 @@ function getCoachingThemes() {
       name: "Gank Setup: Winning Lanes And CC",
       category: "laning",
       keywords: ["winning lane", "cs", "trades", "hp advantage", "cc", "gank that lane", "crowd control", "lane matchups"],
+      requiredContext: ["gank", "ganking", "lane", "lanes", "cc", "crowd control"],
       takeaway: "Good ganks are selected from lane state, crowd control, damage, and matchup volatility.",
       goal: "Before every gank, check whether the lane has CC, damage, HP advantage, or a volatile matchup.",
       mistake: "Ganking lanes without setup while ignoring stronger lanes.",
@@ -1196,7 +1665,8 @@ function getCoachingThemes() {
     {
       name: "Enemy Threat Tracking",
       category: "macro",
-      keywords: ["enemy", "what the enemy", "counter", "surprise", "shut down", "win condition", "enemy champions"],
+      keywords: ["enemy jungler", "enemy jungle", "enemy counterplay", "enemy response", "countergank", "counter-gank", "counter option", "enemy win condition", "threat tracking"],
+      requiredContext: ["enemy jungler", "enemy jungle", "countergank", "counter-gank", "enemy counterplay", "threat tracking", "gank", "objective"],
       takeaway: "Strong jungle decisions include both allied setup and enemy counterplay.",
       goal: "Before committing to a gank, invade, or objective, name the enemy's most likely counter-option.",
       mistake: "Only thinking about allied champion setup while ignoring what enemies can do.",
@@ -1206,6 +1676,7 @@ function getCoachingThemes() {
       name: "Jungle Matchup And Invades",
       category: "macro",
       keywords: ["jungle matchup", "invade", "camp", "stronger early game", "get a kill", "get a camp"],
+      requiredContext: ["jungle", "jungler", "invade", "camp", "camps", "clear", "clearing"],
       takeaway: "Jungle matchup knowledge can create invade windows, camp steals, and early pressure.",
       goal: "Identify one matchup-based invade or tracking opportunity in the first clear review.",
       mistake: "Missing invade windows when the jungle matchup is stronger.",
@@ -1224,6 +1695,7 @@ function getCoachingThemes() {
       name: "Jungle Mental Stack",
       category: "review_note",
       keywords: ["mentally taxing", "lanes", "map awareness", "objectives", "camps", "every single lane"],
+      requiredContext: ["jungle", "jungler", "camp", "camps", "clear", "clearing"],
       takeaway: "Jungle requires managing camps while reading lanes, map state, and objectives.",
       goal: "While clearing, check one lane after each camp and connect that information to your next pathing decision.",
       mistake: "Clearing camps without using the downtime to read the map.",
@@ -1236,6 +1708,10 @@ function scoreThemeSentence(sentence, theme) {
   const lower = sentence.toLowerCase();
 
   if (isFillerSentence(lower)) {
+    return -10;
+  }
+
+  if (theme.requiredContext && !theme.requiredContext.some((phrase) => lower.includes(phrase))) {
     return -10;
   }
 
@@ -1549,6 +2025,32 @@ function createReviewId() {
   return `review_${Date.now()}_${Math.random().toString(16).slice(2, 8)}`;
 }
 
+function createProcessingTimer() {
+  const startedAt = Date.now();
+  const stages = {
+    audioExtractionMs: null,
+    transcriptionMs: null,
+    analysisMs: null,
+  };
+
+  return {
+    startStage(name) {
+      const stageStartedAt = Date.now();
+      return () => {
+        stages[name] = Date.now() - stageStartedAt;
+      };
+    },
+    finish() {
+      return {
+        startedAt: new Date(startedAt).toISOString(),
+        completedAt: new Date().toISOString(),
+        processingMs: Date.now() - startedAt,
+        ...stages,
+      };
+    },
+  };
+}
+
 async function initializeDatabase() {
   if (!db) {
     return;
@@ -1571,6 +2073,10 @@ async function initializeDatabase() {
       ollama_model TEXT,
       word_count INTEGER,
       segment_count INTEGER NOT NULL DEFAULT 0,
+      processing_ms INTEGER,
+      audio_extraction_ms INTEGER,
+      transcription_ms INTEGER,
+      analysis_ms INTEGER,
       raw_review JSONB NOT NULL
     );
 
@@ -1608,6 +2114,8 @@ async function initializeDatabase() {
       target_concept TEXT,
       evidence TEXT,
       status TEXT NOT NULL DEFAULT 'active',
+      coach_note TEXT,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
@@ -1619,6 +2127,13 @@ async function initializeDatabase() {
       score INTEGER
     );
   `);
+
+  await db.query("ALTER TABLE rankup_training_goals ADD COLUMN IF NOT EXISTS coach_note TEXT");
+  await db.query("ALTER TABLE rankup_training_goals ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()");
+  await db.query("ALTER TABLE rankup_reviews ADD COLUMN IF NOT EXISTS processing_ms INTEGER");
+  await db.query("ALTER TABLE rankup_reviews ADD COLUMN IF NOT EXISTS audio_extraction_ms INTEGER");
+  await db.query("ALTER TABLE rankup_reviews ADD COLUMN IF NOT EXISTS transcription_ms INTEGER");
+  await db.query("ALTER TABLE rankup_reviews ADD COLUMN IF NOT EXISTS analysis_ms INTEGER");
 }
 
 async function saveReviewToDatabase(review, savedAs) {
@@ -1648,14 +2163,22 @@ async function saveReviewToDatabase(review, savedAs) {
           ollama_model,
           word_count,
           segment_count,
+          processing_ms,
+          audio_extraction_ms,
+          transcription_ms,
+          analysis_ms,
           raw_review
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
         ON CONFLICT (id) DO UPDATE SET
           raw_review = EXCLUDED.raw_review,
           analysis_summary = EXCLUDED.analysis_summary,
           analysis_mode = EXCLUDED.analysis_mode,
-          confidence = EXCLUDED.confidence
+          confidence = EXCLUDED.confidence,
+          processing_ms = EXCLUDED.processing_ms,
+          audio_extraction_ms = EXCLUDED.audio_extraction_ms,
+          transcription_ms = EXCLUDED.transcription_ms,
+          analysis_ms = EXCLUDED.analysis_ms
       `,
       [
         review.id,
@@ -1673,6 +2196,10 @@ async function saveReviewToDatabase(review, savedAs) {
         review.providers ? review.providers.ollamaModel : "",
         metadata.wordCount || countWords(review.transcript || ""),
         Array.isArray(review.segments) ? review.segments.length : 0,
+        review.processing ? review.processing.processingMs : null,
+        review.processing ? review.processing.audioExtractionMs : null,
+        review.processing ? review.processing.transcriptionMs : null,
+        review.processing ? review.processing.analysisMs : null,
         JSON.stringify(review),
       ]
     );
@@ -1757,6 +2284,7 @@ async function listDatabaseReviews() {
       saved_as,
       LENGTH(COALESCE(transcript, '')) AS transcript_length,
       segment_count,
+      processing_ms,
       analysis_mode,
       confidence
     FROM rankup_reviews
@@ -1772,6 +2300,7 @@ async function listDatabaseReviews() {
     savedAs: row.saved_as,
     transcriptLength: Number(row.transcript_length || 0),
     segmentCount: row.segment_count,
+    processingMs: row.processing_ms,
     analysisMode: row.analysis_mode,
     confidence: row.confidence,
   }));
@@ -1781,6 +2310,35 @@ async function getLatestDatabaseReview() {
   await initializeDatabase();
   const result = await db.query("SELECT raw_review FROM rankup_reviews ORDER BY created_at DESC LIMIT 1");
   return result.rows[0] ? result.rows[0].raw_review : null;
+}
+
+async function updateDatabaseGoal(goalId, { status, title, description, coachNote }) {
+  await initializeDatabase();
+  const result = await db.query(
+    `
+      UPDATE rankup_training_goals
+      SET status = $2,
+          title = CASE WHEN $3::text IS NULL OR BTRIM($3::text) = '' THEN title ELSE BTRIM($3::text) END,
+          description = COALESCE($4, description),
+          coach_note = $5,
+          updated_at = NOW()
+      WHERE id = $1
+      RETURNING
+        id,
+        review_id,
+        title,
+        description,
+        target_concept,
+        evidence,
+        status,
+        coach_note,
+        created_at,
+        updated_at
+    `,
+    [goalId, status, title, description, coachNote]
+  );
+
+  return result.rows[0] || null;
 }
 
 async function getDashboardSummary() {
@@ -1816,14 +2374,16 @@ async function getDashboardSummary() {
           goal.description,
           goal.target_concept,
           goal.evidence,
-          goal.status
+          goal.status,
+          goal.coach_note,
+          goal.updated_at
         FROM rankup_training_goals goal
         JOIN rankup_reviews review ON review.id = goal.review_id
         ORDER BY review.created_at DESC, goal.id ASC
         LIMIT 24
       `),
       db.query(`
-        SELECT id, file_name, created_at, analysis_mode, confidence, analysis_summary
+        SELECT id, file_name, created_at, analysis_mode, confidence, analysis_summary, processing_ms
         FROM rankup_reviews
         ORDER BY created_at DESC
         LIMIT 8
@@ -1883,6 +2443,7 @@ function getJsonDashboardSummary() {
       analysis_mode: review.analysis && review.analysis.metadata ? review.analysis.metadata.analysisMode : "",
       confidence: review.analysis && review.analysis.metadata ? review.analysis.metadata.confidence : "",
       analysis_summary: review.analysis ? review.analysis.summary : review.error,
+      processing_ms: review.processing ? review.processing.processingMs : null,
     })),
   };
 }

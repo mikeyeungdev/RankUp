@@ -10,9 +10,10 @@ The app uploads a coached VOD, extracts audio, transcribes coach commentary loca
 - Local audio extraction with FFmpeg
 - Local transcription with faster-whisper
 - Optional local Ollama analysis for structured training plans
-- Markdown coaching knowledge base for better League-specific structure
+- Markdown coaching knowledge base for role-aware League-specific structure
 - Timestamped transcript segments and full transcript copy view
-- PostgreSQL schema for future review history, goals, and trend tracking
+- PostgreSQL-backed review history dashboard with local JSON fallback
+- Processing-time logging for completed reviews
 
 ## Prerequisites
 
@@ -58,6 +59,14 @@ OLLAMA_TRANSCRIPT_MAX_CHARS=9000
 
 ## Run The App
 
+For the full local setup, have these running:
+
+- PostgreSQL service in the background if `DATABASE_URL` is set. You do not need pgAdmin open.
+- Ollama Desktop if `ANALYSIS_PROVIDER=ollama`.
+- RankUp with `npm run dev`.
+
+RankUp still runs if PostgreSQL is offline. It falls back to local JSON review files in `reviews/`.
+
 ```powershell
 npm run dev
 ```
@@ -85,6 +94,13 @@ http://localhost:3000
 9. Use `Copy Transcript` if you want to save or share the transcript.
 
 The best input is a VOD that already contains spoken coach review audio. RankUp is designed around coach commentary, not silent gameplay.
+
+Each completed review stores processing-time metadata:
+
+- audio extraction time
+- transcription time
+- analysis time
+- total processing time
 
 ## Output Sections
 
@@ -114,13 +130,16 @@ The dashboard tracks review history across analyzed VODs:
 - completed reviews
 - Ollama-assisted reviews
 - top focus areas
-- editable recommended training goals
+- PostgreSQL-backed recommended training goal edits
+- coach notes and goal status updates
 - recent review summaries
 - previous VOD analysis details
 
 RankUp can run the dashboard from local JSON files, but PostgreSQL unlocks the full persistence story for a portfolio demo.
 
 ## PostgreSQL Setup
+
+PostgreSQL runs as a Windows background service. pgAdmin is only a visual database tool, so RankUp can connect even when pgAdmin is closed.
 
 Create a local database:
 
