@@ -207,12 +207,25 @@ function Analyzer() {
   return (
     <>
       <section className="hero" id="uploadSection">
-        <div>
+        <div className="hero-copy">
+          <span className="hero-kicker">Coach review to practice plan</span>
           <h1>Generate a training plan from coach audio.</h1>
           <p>
-            Upload a League coaching VOD, extract the transcript, and turn the review into goals the student can act on.
+            Turn a League coaching VOD into transcript-backed focus areas, key timestamps,
+            <br />
+            and concrete goals for the next review cycle.
           </p>
-          <span className="status-pill">{status}</span>
+          <div className="hero-actions" aria-label="Analyzer status">
+            <button className="primary-action" type="button" onClick={() => document.querySelector(".upload-card")?.scrollIntoView({ behavior: "smooth" })}>
+              Start Review
+            </button>
+            <span className="status-pill">{status}</span>
+          </div>
+          <div className="hero-proof" aria-label="Review outputs">
+            <span>Transcript</span>
+            <span>Focus Areas</span>
+            <span>Training Goals</span>
+          </div>
         </div>
       </section>
 
